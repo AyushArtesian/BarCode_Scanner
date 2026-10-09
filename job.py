@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+"""Scan one PDF from Azure Blob Storage and store results in blob metadata.
+
+Flow:
+  download PDF -> scan every page at every DPI -> update blob metadata
+  -> print the result
+
+Environment variables (see .env)
+  AZURE_STORAGE_CONNECTION_STRING  read/write access to the source blob
+  INPUT_PDF_URL                   optional fallback when no URL argument is passed
+  LOCAL_INPUT                     optional local PDF path for development/testing
+  LOCAL_OUTPUT_DIR                optional folder for a local JSON copy
+  SCAN_DPIS                       default "150,170,200,250"
+  WORKERS                         default available CPU count - 1
+  FALLBACK                        "1" enables the slow full-page decode
+
+The blob's BarcodeResults metadata entry contains compact JSON with the page
+and value of each detected barcode. The source PDF bytes are not changed.
+Local-input runs retain the PDF metadata fallback for development.
+
+Output
+  stdout  the response: one JSON object per run
+  stderr  logs: one JSON object per line
+
+Exit codes
+  0  ok (includes partial results)
+  1  download failed or the file is not a PDF
+  2  scan failed, or every page errored (response still printed)
+  3  writing the output failed (response still printed)
+  4  configuration error
+"""
+import argparse
+import json
+import logging
+import os
+import signal
+import shutil
+import sys
+import tempfile
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, Tuple
+from urllib.parse import unquote, urlsplit
+
+from azure.storage.blob import BlobClient, BlobProperties
+from dotenv import load_dotenv
+
+# Load .env for local runs. Real environment variables take precedence.
+# Azure has no .env file, so this does nothing there.
+load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
+
+from barcodescan.config import DEFAULT_DPIS, Settings  # noqa: E402
+from barcodescan.pdf_metadata import (  # noqa: E402
+    format_barcode_metadata,
+    write_barcode_metadata,
+)
+from barcodescan.scan_api import scan_pdf              # noqa: E402
+from barcodescan.storage import (  # noqa: E402
+    create_blob_client,
+    download_blob_to,
+    format_blob_metadata,
+    redact,
+    update_blob_metadata,
+)
+
+EXIT_OK, EXIT_DOWNLOAD, EXIT_SCAN, EXIT_WRITE, EXIT_CONFIG = range(5)
+JOB_ID = os.environ.get("CONTAINER_APP_JOB_EXECUTION_NAME", "local")
+log = logging.getLogger("barcode-job")
+
+
+class ConfigError(Exception):
+    pass
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        out = {"ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+               "level": record.levelname, "job": JOB_ID, "msg": record.getMessage()}
+        if record.exc_info:
+            out["exc"] = self.formatException(record.exc_info)
+        return json.dumps(out, ensure_ascii=False)
+
+
+def setup_logging():
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(JsonFormatter())
+    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
+
+
+@dataclass(frozen=True)
+class JobConfig:
+    input_url: Optional[str]
+    local_input: Optional[Path]
+    blob_client: Optional[BlobClient]
+    local_output_dir: Optional[Path]
+    dpis: Tuple[int, ...]
+    workers: int
+    fallback: bool
+
+
+def parse_dpis(text: str) -> Tuple[int, ...]:
+    try:
+        dpis = tuple(int(x.strip()) for x in text.split(",") if x.strip())
+    except ValueError as e:
+        raise ConfigError("SCAN_DPIS must be comma-separated positive integers") from e
+    if not dpis or any(dpi <= 0 for dpi in dpis):
+        raise ConfigError("SCAN_DPIS must contain positive integers")
+    return dpis
+
+
+def load_config(input_argument: Optional[str] = None) -> JobConfig:
+    env = os.environ.get
+    input_url = (input_argument or env("INPUT_PDF_URL") or "").strip() or None
+    local_input = (env("LOCAL_INPUT") or "").strip() or None
+    connection_string = (env("AZURE_STORAGE_CONNECTION_STRING") or "").strip() or None
+    local_out = (env("LOCAL_OUTPUT_DIR") or "").strip() or None
+
+    if input_url and local_input:
+        raise ConfigError("set INPUT_PDF_URL or LOCAL_INPUT, not both")
+    if not input_url and not local_input:
+        raise ConfigError("pass a PDF URL or set INPUT_PDF_URL / LOCAL_INPUT")
+    blob = None
+    if input_url:
+        if not connection_string:
+            raise ConfigError("AZURE_STORAGE_CONNECTION_STRING is required for blob URLs")
+        try:
+            blob = create_blob_client(connection_string, input_url, ".pdf")
+        except (ValueError, TypeError) as e:
+            raise ConfigError(f"INPUT_PDF_URL: {e}")
+    if local_input and not Path(local_input).is_file():
+        raise ConfigError(f"LOCAL_INPUT not found: {local_input}")
+
+    dpis = parse_dpis(env("SCAN_DPIS", ",".join(map(str, DEFAULT_DPIS))))
+    try:
+        available_cpus = os.process_cpu_count() or os.cpu_count() or 2
+        default_workers = (
+            available_cpus
+            if env("CONTAINER_APP_JOB_EXECUTION_NAME")
+            else max(1, available_cpus - 1)
+        )
+        workers = int(env("WORKERS") or default_workers)
+    except ValueError:
+        raise ConfigError("WORKERS must be an integer")
+    if workers < 1:
+        raise ConfigError("WORKERS must be a positive integer")
+
+    return JobConfig(
+        input_url=input_url,
+        local_input=Path(local_input) if local_input else None,
+        blob_client=blob,
+        local_output_dir=Path(local_out) if local_out else None,
+        dpis=dpis,
+        workers=workers,
+        fallback=env("FALLBACK") == "1",
+    )
+
+
+def input_name(cfg: JobConfig) -> str:
+    if cfg.local_input:
+        return cfg.local_input.name
+    return unquote(Path(urlsplit(cfg.input_url or "").path).name)
+
+
+def build_result(merger, name: str, settings: Settings, seconds: float) -> dict:
+    stats = merger.summary()
+    rows = list(merger.rows())
+    barcodes = [{"page": r["page"], "type": r["barcode_type"], "value": r["value"],
+                 "dpi": r["dpi"], "bbox": [r["x0"], r["y0"], r["x1"], r["y1"]]}
+                for r in rows if r["status"] == "found"]
+    error_pages = [{"page": r["page"], "error": r["value"]}
+                   for r in rows if r["status"] == "error"]
+
+    if stats["errors"] == 0:
+        status = "ok"
+    elif stats["errors"] < stats["pages"]:
+        status = "partial"
+    else:
+        status = "error"
+
+    return {
+        "file": name,
+        "status": status,
+        "dpis": list(settings.dpis),
+        "pages_total": stats["pages"],
+        "pages_with_barcodes": stats["found_pages"],
+        "barcode_count": stats["codes"],
+        "error_count": stats["errors"],
+        "seconds": round(seconds, 1),
+        "barcodes": barcodes,
+        "error_pages": error_pages,
+    }
+
+
+def failure(stage: str, err, name: str = None) -> dict:
+    return {"file": name, "status": "failed", "stage": stage, "error": str(err)}
+
+
+def run(cfg: JobConfig, started: float):
+    """Returns (exit_code, response_dict). Always returns a response."""
+    name = input_name(cfg)
+    settings = Settings(dpis=cfg.dpis, fallback=cfg.fallback)
+    source = str(cfg.local_input) if cfg.local_input else redact(cfg.input_url or "")
+    log.info("start file=%s source=%s dpis=%s workers=%d",
+             name, source, list(cfg.dpis), cfg.workers)
+
+    with tempfile.TemporaryDirectory(prefix="barcode-") as tmp:
+        pdf_path = Path(tmp) / "input.pdf"
+        blob_properties: Optional[BlobProperties] = None
+
+        try:
+            if cfg.local_input:
+                shutil.copy(cfg.local_input, pdf_path)
+            else:
+                if cfg.blob_client is None:
+                    raise RuntimeError("blob client is not configured")
+                blob_properties = download_blob_to(cfg.blob_client, pdf_path)
+            with open(pdf_path, "rb") as fh:
+                if fh.read(5) != b"%PDF-":
+                    raise ValueError("downloaded file is not a PDF")
+            log.info("downloaded %.1f MB to temp folder", pdf_path.stat().st_size / 1e6)
+        except Exception as e:
+            log.error("download failed: %s", e)
+            return EXIT_DOWNLOAD, failure("download", e, name)
+
+        def on_progress(done, total):
+            log.info("progress %d/%d tasks, %.0fs elapsed",
+                     done, total, time.perf_counter() - started)
+
+        try:
+            merger = scan_pdf(pdf_path, cfg.workers, settings,
+                              name=name, progress=on_progress)
+        except Exception as e:
+            log.exception("scan failed")
+            return EXIT_SCAN, failure("scan", e, name)
+
+        elapsed = time.perf_counter() - started
+        result = build_result(merger, name, settings, elapsed)
+        if result["status"] == "error":
+            log.error("every page failed; source PDF was not changed")
+            return EXIT_SCAN, result
+
+        try:
+            if cfg.blob_client is not None:
+                if blob_properties is None:
+                    raise RuntimeError("source blob properties are not available")
+                update_blob_metadata(
+                    cfg.blob_client,
+                    blob_properties,
+                    {"BarcodeResults": format_blob_metadata(result)},
+                )
+                log.info("updated source blob metadata without changing PDF content")
+            else:
+                updated_pdf = Path(tmp) / "updated.pdf"
+                write_barcode_metadata(pdf_path, updated_pdf, result)
+                shutil.copyfile(updated_pdf, cfg.local_input)
+                log.info("updated source PDF metadata at %s", cfg.local_input)
+
+            if cfg.local_output_dir:
+                cfg.local_output_dir.mkdir(parents=True, exist_ok=True)
+                target = cfg.local_output_dir / (Path(name).stem + ".json")
+                target.write_text(
+                    json.dumps(result, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                log.info("saved local JSON result to %s", target)
+        except Exception as e:
+            log.exception("writing blob metadata or local result failed")
+            return EXIT_WRITE, failure("write", e, name)
+
+    log.info("temp folder deleted")
+    return EXIT_OK, result
+
+
+def handle_sigterm(signum, frame):
+    log.warning("SIGTERM received, stopping")
+    sys.exit(143)
+
+
+def main(argv=None) -> int:
+    setup_logging()
+    signal.signal(signal.SIGTERM, handle_sigterm)
+    started = time.perf_counter()
+
+    parser = argparse.ArgumentParser(
+        description="Scan an Azure PDF blob and write barcode results to blob metadata."
+    )
+    parser.add_argument(
+        "input_pdf_url",
+        nargs="?",
+        help="HTTPS Azure Blob URL of a PDF (query parameters are ignored)",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        cfg = load_config(args.input_pdf_url)
+    except ConfigError as e:
+        log.error("configuration error: %s", e)
+        print(json.dumps(failure("config", e)), flush=True)
+        return EXIT_CONFIG
+
+    code, result = run(cfg, started)
+    print(json.dumps(result, ensure_ascii=False), flush=True)   # the response
+    log.info("finished status=%s exit=%d", result.get("status"), code)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,12 @@
+.env*
+.git
+.venv
+venv
+__pycache__
+**/__pycache__
+*.py[cod]
+input
+output
+local_results
+tests
+response.json

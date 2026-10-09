@@ -1,0 +1,9 @@
+opencv-python-headless
+numpy
+pillow
+pypdfium2
+zxing-cpp
+azure-identity
+azure-storage-blob
+python-dotenv
+pypdf
