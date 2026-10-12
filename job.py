@@ -7,6 +7,8 @@ Flow:
 
 Environment variables (see .env)
   AZURE_STORAGE_CONNECTION_STRING  read/write access to the source blob
+  AZURE_STORAGE_AUTH_MODE         connection_string, azure_cli, or managed_identity
+  AZURE_STORAGE_ACCOUNT_URL       account endpoint for identity authentication
   INPUT_PDF_URL                   optional fallback when no URL argument is passed
   LOCAL_INPUT                     optional local PDF path for development/testing
   LOCAL_OUTPUT_DIR                optional folder for a local JSON copy
@@ -43,6 +45,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 from urllib.parse import unquote, urlsplit
 
+from azure.identity import AzureCliCredential, ManagedIdentityCredential
 from azure.storage.blob import BlobClient, BlobProperties
 from dotenv import load_dotenv
 
@@ -55,13 +58,16 @@ from barcodescan.pdf_metadata import (  # noqa: E402
     format_barcode_metadata,
     write_barcode_metadata,
 )
+from barcodescan.results import build_result           # noqa: E402
 from barcodescan.scan_api import scan_pdf              # noqa: E402
 from barcodescan.storage import (  # noqa: E402
     create_blob_client,
+    create_blob_client_with_credential,
     download_blob_to,
     format_blob_metadata,
     redact,
     update_blob_metadata,
+    validate_storage_account_url,
 )
 
 EXIT_OK, EXIT_DOWNLOAD, EXIT_SCAN, EXIT_WRITE, EXIT_CONFIG = range(5)
@@ -109,11 +115,53 @@ def parse_dpis(text: str) -> Tuple[int, ...]:
     return dpis
 
 
+def create_job_blob_client(input_url: str) -> BlobClient:
+    env = os.environ.get
+    auth_mode = (env("AZURE_STORAGE_AUTH_MODE") or "connection_string").strip().lower()
+
+    if auth_mode == "connection_string":
+        connection_string = (env("AZURE_STORAGE_CONNECTION_STRING") or "").strip()
+        if not connection_string:
+            raise ConfigError("AZURE_STORAGE_CONNECTION_STRING is required for blob URLs")
+        try:
+            return create_blob_client(connection_string, input_url, ".pdf")
+        except (TypeError, ValueError) as e:
+            raise ConfigError(f"INPUT_PDF_URL: {e}") from e
+
+    if auth_mode not in {"azure_cli", "managed_identity"}:
+        raise ConfigError(
+            "AZURE_STORAGE_AUTH_MODE must be connection_string, azure_cli, "
+            "or managed_identity"
+        )
+
+    account_url = (env("AZURE_STORAGE_ACCOUNT_URL") or "").strip()
+    if not account_url:
+        raise ConfigError("AZURE_STORAGE_ACCOUNT_URL is required for identity auth")
+    try:
+        account_url = validate_storage_account_url(account_url)
+    except (TypeError, ValueError) as e:
+        raise ConfigError(f"AZURE_STORAGE_ACCOUNT_URL: {e}") from e
+
+    credential = (
+        ManagedIdentityCredential()
+        if auth_mode == "managed_identity"
+        else AzureCliCredential()
+    )
+    try:
+        return create_blob_client_with_credential(
+            account_url,
+            input_url,
+            ".pdf",
+            credential,
+        )
+    except (TypeError, ValueError) as e:
+        raise ConfigError(f"INPUT_PDF_URL: {e}") from e
+
+
 def load_config(input_argument: Optional[str] = None) -> JobConfig:
     env = os.environ.get
     input_url = (input_argument or env("INPUT_PDF_URL") or "").strip() or None
     local_input = (env("LOCAL_INPUT") or "").strip() or None
-    connection_string = (env("AZURE_STORAGE_CONNECTION_STRING") or "").strip() or None
     local_out = (env("LOCAL_OUTPUT_DIR") or "").strip() or None
 
     if input_url and local_input:
@@ -122,12 +170,7 @@ def load_config(input_argument: Optional[str] = None) -> JobConfig:
         raise ConfigError("pass a PDF URL or set INPUT_PDF_URL / LOCAL_INPUT")
     blob = None
     if input_url:
-        if not connection_string:
-            raise ConfigError("AZURE_STORAGE_CONNECTION_STRING is required for blob URLs")
-        try:
-            blob = create_blob_client(connection_string, input_url, ".pdf")
-        except (ValueError, TypeError) as e:
-            raise ConfigError(f"INPUT_PDF_URL: {e}")
+        blob = create_job_blob_client(input_url)
     if local_input and not Path(local_input).is_file():
         raise ConfigError(f"LOCAL_INPUT not found: {local_input}")
 
@@ -160,36 +203,6 @@ def input_name(cfg: JobConfig) -> str:
     if cfg.local_input:
         return cfg.local_input.name
     return unquote(Path(urlsplit(cfg.input_url or "").path).name)
-
-
-def build_result(merger, name: str, settings: Settings, seconds: float) -> dict:
-    stats = merger.summary()
-    rows = list(merger.rows())
-    barcodes = [{"page": r["page"], "type": r["barcode_type"], "value": r["value"],
-                 "dpi": r["dpi"], "bbox": [r["x0"], r["y0"], r["x1"], r["y1"]]}
-                for r in rows if r["status"] == "found"]
-    error_pages = [{"page": r["page"], "error": r["value"]}
-                   for r in rows if r["status"] == "error"]
-
-    if stats["errors"] == 0:
-        status = "ok"
-    elif stats["errors"] < stats["pages"]:
-        status = "partial"
-    else:
-        status = "error"
-
-    return {
-        "file": name,
-        "status": status,
-        "dpis": list(settings.dpis),
-        "pages_total": stats["pages"],
-        "pages_with_barcodes": stats["found_pages"],
-        "barcode_count": stats["codes"],
-        "error_count": stats["errors"],
-        "seconds": round(seconds, 1),
-        "barcodes": barcodes,
-        "error_pages": error_pages,
-    }
 
 
 def failure(stage: str, err, name: str = None) -> dict:

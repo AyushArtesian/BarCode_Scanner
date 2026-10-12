@@ -2,5 +2,7 @@
 /input
 /local_results
 /tests
+/tests/*
+!/tests/
 /__pycache__
 .env
