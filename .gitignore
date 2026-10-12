@@ -4,5 +4,6 @@
 /tests
 /tests/*
 !/tests/
+!/tests/*.py
 /__pycache__
 .env

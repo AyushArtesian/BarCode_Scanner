@@ -1,10 +1,11 @@
 # Barcode PDF scanner
 
-This project scans a PDF from Azure Blob Storage and writes the detected
-barcodes into the source blob's `BarcodeResults` metadata field as compact JSON,
-for example `[{"page":1,"value":"ABC123"}]`. The PDF content is not rewritten.
-If no barcode is detected, the field is set to an empty JSON array (`[]`).
-Local-file runs still write `/BarcodeResults` to the PDF's document metadata.
+This project scans a PDF from Azure Blob Storage and upserts one result entity
+per source PDF into the `BarcodeScanResults` Azure Table. Each row records the
+source Blob URL, original and derived split filenames, `Store` metadata,
+1-based barcode boundary pages and values, and the latest scan time in UTC.
+The source blob metadata and PDF content are not changed. The job detects the
+would-be split ranges but does not create or upload split PDFs.
 
 ## Azure Container Apps Job input
 
@@ -17,14 +18,36 @@ https://<account>.blob.core.windows.net/<container>/<path>/<file>.pdf
 The URL identifies the storage account, container, and blob. Authentication
 uses the Container Apps Job's system-assigned managed identity by default in
 the Azure deployment instructions below. The identity needs Blob data access
-to read the PDF and update its metadata. Local runs can use Azure CLI
-credentials. Connection-string mode remains available for existing deployments.
-No SAS token is required, and URL query parameters are ignored.
+to read the PDF and Table data access to create/update the results entity.
+Local cloud-Blob runs can use Azure CLI credentials. Connection-string mode
+remains available for existing deployments. No SAS token is required, and URL
+query parameters are ignored and are not stored in the results table.
 
 The job prints one JSON response to stdout and structured progress logs to
 stderr. An execution is unsuccessful if downloading, scanning all pages, or
-updating blob metadata fails. If some pages scan successfully and others fail,
-the job records the barcodes it found and returns a `partial` result.
+writing the table entity fails. If some pages scan successfully and others
+fail, the job records the barcodes it found and returns a `partial` result.
+
+## Table result entity
+
+The job creates or reuses the `BarcodeScanResults` table in the storage
+account's Table service; this table is separate from Blob containers. The
+`barcodescanner-results` Blob container is not used because this workflow
+doesn't upload a backup or split PDFs.
+
+Each entity is keyed by source container and a stable hash of the source blob
+name, so reprocessing the same PDF replaces its row. Its properties are:
+
+- `BlobBackupFilePath`: source Blob URL without SAS/query parameters.
+- `OriginalFileName`: JSON array containing the source filename, followed by
+  derived range names. A unique barcode boundary page closes a range; the next
+  range starts on the following page. For example, boundaries on pages 3 and 7
+  produce `file_1_3.pdf` and `file_4_7.pdf`. These names are recorded only;
+  the PDFs are not created.
+- `Store`: source blob's `Store` metadata value, or an empty string if absent.
+- `pagenumber`: JSON array of `{ "page": 1-based page number, "rono": "barcode value" }`
+  entries for detected barcode boundaries.
+- `CreatedAt`: UTC time of the latest successful scan.
 
 ## Local development
 
@@ -44,8 +67,8 @@ For existing deployments that still use a connection string, leave
 instead. Do not commit a real `.env` file or put credentials in source control.
 
 For a local input PDF, set `LOCAL_INPUT` and leave `INPUT_PDF_URL` unset. The
-local mode updates that PDF in place. Set `LOCAL_OUTPUT_DIR` if you also want a
-local JSON copy of the result.
+local mode never modifies the PDF or writes an Azure Table entity. Set
+`LOCAL_OUTPUT_DIR` if you want a local JSON copy of the scan result.
 
 Run the tests with:
 
@@ -143,7 +166,7 @@ az containerapp job create `
     "SCAN_DPIS=150,170,200,250" `
     "WORKERS=2"
 
-# Keep the user-assigned identity for ACR pulls and add a system identity for Blob access.
+# Keep the user-assigned identity for ACR pulls and add a system identity for storage access.
 az containerapp job identity assign `
   --name $jobName `
   --resource-group $resourceGroup `
@@ -161,10 +184,14 @@ $storageAccountId = az storage account show `
   --output tsv
 $containerScope = "$storageAccountId/blobServices/default/containers/$storageContainerName"
 Write-Host "Ask an administrator to grant Storage Blob Data Contributor to $jobPrincipalId at $containerScope"
+Write-Host "Ask an administrator to grant Storage Table Data Contributor to $jobPrincipalId at $storageAccountId"
 # An administrator with role-assignment permissions can run:
 # az role assignment create --assignee-object-id $jobPrincipalId `
 #   --assignee-principal-type ServicePrincipal `
 #   --role "Storage Blob Data Contributor" --scope $containerScope
+# az role assignment create --assignee-object-id $jobPrincipalId `
+#   --assignee-principal-type ServicePrincipal `
+#   --role "Storage Table Data Contributor" --scope $storageAccountId
 ```
 
 Run one PDF by setting the URL on the job and then starting it:
@@ -265,14 +292,17 @@ if (
 }
 $containerScope = "$storageAccountId/blobServices/default/containers/$containerName"
 Write-Host "Ask an administrator to grant Storage Blob Data Contributor to $jobPrincipalId at $containerScope"
+Write-Host "Ask an administrator to grant Storage Table Data Contributor to $jobPrincipalId at $storageAccountId"
 ```
 
 An administrator with role-assignment permissions must grant the Job identity
-`Storage Blob Data Contributor` at `$containerScope`. The user-assigned identity
-continues to pull the image from ACR.
+`Storage Blob Data Contributor` at `$containerScope` and
+`Storage Table Data Contributor` at `$storageAccountId`. The latter allows the
+Job to create `BarcodeScanResults` if needed and upsert its row. The
+user-assigned identity continues to pull the image from ACR.
 
 The administrator can run this after receiving `$jobPrincipalId` and
-`$containerScope`:
+the respective scopes:
 
 ```powershell
 az role assignment create `
@@ -280,6 +310,12 @@ az role assignment create `
   --assignee-principal-type ServicePrincipal `
   --role "Storage Blob Data Contributor" `
   --scope "<containerScope>"
+
+az role assignment create `
+  --assignee-object-id "<jobPrincipalId>" `
+  --assignee-principal-type ServicePrincipal `
+  --role "Storage Table Data Contributor" `
+  --scope "<storageAccountId>"
 ```
 
 ### Test the deployed job without a Logic App
@@ -322,7 +358,8 @@ $startResult
 ```
 
 Check **Container Apps Jobs → `alynk-filebunker-dev-cont-job` → Executions**
-and inspect the execution logs. Verify `BarcodeResults` in the blob metadata.
+and inspect the execution logs. Verify the row in the storage account's
+**Tables** section under `BarcodeScanResults`.
 The container override must include the container name, image, resources,
 command, and environment values; the `args` array carries the PDF URL.
 
@@ -391,6 +428,12 @@ az role assignment create `
   --assignee-principal-type ServicePrincipal `
   --role "Storage Blob Data Contributor" `
   --scope "<containerScope from above>"
+
+az role assignment create `
+  --assignee-object-id "<jobPrincipalId from above>" `
+  --assignee-principal-type ServicePrincipal `
+  --role "Storage Table Data Contributor" `
+  --scope "<storageAccountId from above>"
 ```
 
 Example body (replace the image tag and Logic App expression with your values):
@@ -435,10 +478,10 @@ The Logic App identity needs permission to start the job. The built-in
 before assigning it: operator permissions can include access to job secrets.
 Prefer a job-scoped custom role that allows
 `Microsoft.App/jobs/start/action` and only the read actions required by your
-workflow. The job's separate system-assigned identity needs
-`Storage Blob Data Contributor` on the source container; the existing
-user-assigned identity can remain attached for ACR image pulls. The Logic App
-identity does not need Blob permissions.
+workflow. The job's separate system-assigned identity needs Blob access on the source
+container and `Storage Table Data Contributor` at the storage-account scope;
+the existing user-assigned identity can remain attached for ACR image pulls.
+The Logic App identity does not need Blob or Table data permissions.
 
 The start response includes an execution ID. Use the Jobs execution
 `GET` operation if the workflow needs to poll completion; the API's start
@@ -452,13 +495,13 @@ response alone only confirms that Azure accepted/started the execution.
   Benchmark with representative PDFs before increasing the worker count further.
 - Increase `--replica-timeout` for large or multi-page PDFs.
 - Use a new image tag, then update the job image when deploying code changes.
-- The job uses its system-assigned identity for Blob Storage. Keep the
+- The job uses its system-assigned identity for Blob and Table Storage. Keep the
   user-assigned identity attached for private ACR image pulls.
 - Existing connection-string mode is retained for legacy runs; prefer managed
   identity and remove any obsolete storage connection-string secret after
   validating the new path.
-- The metadata update preserves other existing blob metadata and uses the
-  original ETag to avoid applying results if the blob changed during scanning.
+- Source Blob metadata is read only to copy the `Store` value into the table;
+  barcode results are never written to Blob metadata.
 
 ## References
 
@@ -469,11 +512,10 @@ response alone only confirms that Azure accepted/started the execution.
 - [Azure CLI `az containerapp job` reference](https://learn.microsoft.com/en-us/cli/azure/containerapp/job?view=azure-cli-latest)
 - [Use a managed identity to pull images from ACR](https://learn.microsoft.com/en-us/azure/container-apps/managed-identity-image-pull)
 - [Download blobs with the Azure Storage Python SDK](https://learn.microsoft.com/en-us/azure/storage/blobs/storage-blob-download-python)
-- [Upload blobs with the Azure Storage Python SDK](https://learn.microsoft.com/en-us/azure/storage/blobs/storage-blob-upload-python)
 - [Authorize access to blobs with Microsoft Entra ID](https://learn.microsoft.com/en-us/azure/storage/blobs/authorize-access-azure-active-directory)
+- [Azure Tables client library for Python](https://learn.microsoft.com/en-us/python/api/overview/azure/data-tables-readme?view=azure-python)
+- [Authorize access to tables with Microsoft Entra ID](https://learn.microsoft.com/en-us/azure/storage/tables/authorize-access-azure-active-directory)
 - [Azure Identity Python credential classes](https://learn.microsoft.com/en-us/python/api/overview/azure/identity-readme?view=azure-python)
 - [Azure CLI `az containerapp identity` reference](https://learn.microsoft.com/en-us/cli/azure/containerapp/identity?view=azure-cli-latest)
-- [Azure Storage Python `BlobClient` conditional operations](https://learn.microsoft.com/en-us/python/api/azure-storage-blob/azure.storage.blob.blobclient?view=azure-python)
-- [Azure Blob metadata](https://learn.microsoft.com/en-us/azure/storage/blobs/storage-blob-properties-metadata)
 - [Configure Logic Apps managed identity authentication](https://learn.microsoft.com/en-us/azure/logic-apps/authenticate-with-managed-identity)
 - [Azure built-in roles for Containers](https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/containers)

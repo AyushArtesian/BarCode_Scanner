@@ -1,5 +1,4 @@
 """Azure Blob Storage access using connection strings or token credentials."""
-import json
 from pathlib import Path
 from urllib.parse import unquote, urlsplit, urlunsplit
 
@@ -126,33 +125,3 @@ def download_blob_to(blob: BlobClient, destination: Path) -> BlobProperties:
             match_condition=MatchConditions.IfNotModified,
         ).readinto(file)
     return properties
-
-
-def format_blob_metadata(result: dict) -> str:
-    """Serialize page/value results as compact, HTTP-header-safe JSON."""
-    entries = [
-        {"page": barcode["page"], "value": barcode["value"]}
-        for barcode in result["barcodes"]
-    ]
-    return json.dumps(entries, ensure_ascii=True, separators=(",", ":"))
-
-
-def update_blob_metadata(
-    blob: BlobClient,
-    properties: BlobProperties,
-    metadata: dict[str, str],
-) -> None:
-    """Conditionally update metadata without changing the blob content."""
-    blob_metadata = dict(properties.metadata or {})
-    replacement_names = {name.lower() for name in metadata}
-    blob_metadata = {
-        name: value
-        for name, value in blob_metadata.items()
-        if name.lower() not in replacement_names
-    }
-    blob_metadata.update(metadata)
-    blob.set_blob_metadata(
-        metadata=blob_metadata,
-        etag=properties.etag,
-        match_condition=MatchConditions.IfNotModified,
-    )

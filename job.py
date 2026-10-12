@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Scan one PDF from Azure Blob Storage and store results in blob metadata.
+"""Scan one PDF from Azure Blob Storage and store results in Azure Table Storage.
 
 Flow:
-  download PDF -> scan every page at every DPI -> update blob metadata
+  download PDF -> scan every page at every DPI -> upsert one table entity
   -> print the result
 
 Environment variables (see .env)
-  AZURE_STORAGE_CONNECTION_STRING  read/write access to the source blob
+  AZURE_STORAGE_CONNECTION_STRING  access to the source blob and table service
   AZURE_STORAGE_AUTH_MODE         connection_string, azure_cli, or managed_identity
-  AZURE_STORAGE_ACCOUNT_URL       account endpoint for identity authentication
+  AZURE_STORAGE_ACCOUNT_URL       Blob account endpoint for identity authentication
   INPUT_PDF_URL                   optional fallback when no URL argument is passed
   LOCAL_INPUT                     optional local PDF path for development/testing
   LOCAL_OUTPUT_DIR                optional folder for a local JSON copy
@@ -16,9 +16,8 @@ Environment variables (see .env)
   WORKERS                         default available CPU count - 1
   FALLBACK                        "1" enables the slow full-page decode
 
-The blob's BarcodeResults metadata entry contains compact JSON with the page
-and value of each detected barcode. The source PDF bytes are not changed.
-Local-input runs retain the PDF metadata fallback for development.
+The source Blob metadata and PDF bytes are not changed. The table entity stores
+barcode page/value data and the derived names for the would-be split files.
 
 Output
   stdout  the response: one JSON object per run
@@ -28,7 +27,7 @@ Exit codes
   0  ok (includes partial results)
   1  download failed or the file is not a PDF
   2  scan failed, or every page errored (response still printed)
-  3  writing the output failed (response still printed)
+  3  writing the table/local result failed (response still printed)
   4  configuration error
 """
 import argparse
@@ -54,20 +53,18 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
 
 from barcodescan.config import DEFAULT_DPIS, Settings  # noqa: E402
-from barcodescan.pdf_metadata import (  # noqa: E402
-    format_barcode_metadata,
-    write_barcode_metadata,
-)
 from barcodescan.results import build_result           # noqa: E402
 from barcodescan.scan_api import scan_pdf              # noqa: E402
 from barcodescan.storage import (  # noqa: E402
     create_blob_client,
     create_blob_client_with_credential,
     download_blob_to,
-    format_blob_metadata,
     redact,
-    update_blob_metadata,
     validate_storage_account_url,
+)
+from barcodescan.table_storage import (  # noqa: E402
+    build_result_entity,
+    write_result_entity,
 )
 
 EXIT_OK, EXIT_DOWNLOAD, EXIT_SCAN, EXIT_WRITE, EXIT_CONFIG = range(5)
@@ -255,20 +252,17 @@ def run(cfg: JobConfig, started: float):
 
         try:
             if cfg.blob_client is not None:
-                if blob_properties is None:
+                if blob_properties is None or cfg.input_url is None:
                     raise RuntimeError("source blob properties are not available")
-                update_blob_metadata(
-                    cfg.blob_client,
-                    blob_properties,
-                    {"BarcodeResults": format_blob_metadata(result)},
+                entity = build_result_entity(
+                    cfg.input_url,
+                    name,
+                    blob_properties.metadata,
+                    result,
                 )
-                log.info("updated source blob metadata without changing PDF content")
-            else:
-                updated_pdf = Path(tmp) / "updated.pdf"
-                write_barcode_metadata(pdf_path, updated_pdf, result)
-                shutil.copyfile(updated_pdf, cfg.local_input)
-                log.info("updated source PDF metadata at %s", cfg.local_input)
-
+                write_result_entity(entity)
+                log.info("upserted scan results in Azure Table %s",
+                         "BarcodeScanResults")
             if cfg.local_output_dir:
                 cfg.local_output_dir.mkdir(parents=True, exist_ok=True)
                 target = cfg.local_output_dir / (Path(name).stem + ".json")
@@ -278,7 +272,7 @@ def run(cfg: JobConfig, started: float):
                 )
                 log.info("saved local JSON result to %s", target)
         except Exception as e:
-            log.exception("writing blob metadata or local result failed")
+            log.exception("writing table or local result failed")
             return EXIT_WRITE, failure("write", e, name)
 
     log.info("temp folder deleted")

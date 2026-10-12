@@ -4,6 +4,7 @@ pillow
 pypdfium2
 zxing-cpp
 azure-identity
+azure-data-tables
 azure-storage-blob
 python-dotenv
 pypdf
