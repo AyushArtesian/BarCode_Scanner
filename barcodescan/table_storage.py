@@ -51,21 +51,26 @@ def build_result_entity(
     source_metadata: dict[str, str] | None,
     result: dict,
     created_at: datetime | None = None,
+    original_file_name: str | None = None,
+    store_code: str | None = None,
 ) -> dict:
     """Build a stable, SAS-free table entity for a scanned source PDF."""
     container, blob_name = parse_blob_url(blob_url, ".pdf")
+    table_file_name = original_file_name or source_name
     barcodes = sorted(
         result["barcodes"],
         key=lambda barcode: (int(barcode["page"]), str(barcode["value"])),
     )
-    store = next(
-        (
-            value
-            for key, value in (source_metadata or {}).items()
-            if key.casefold() == "store" and value is not None
-        ),
-        "",
-    )
+    store = store_code
+    if store is None:
+        store = next(
+            (
+                value
+                for key, value in (source_metadata or {}).items()
+                if key.casefold() == "store" and value is not None
+            ),
+            "",
+        )
     timestamp = created_at or datetime.now(timezone.utc)
     if timestamp.tzinfo is None:
         raise ValueError("created_at must be timezone-aware")
@@ -75,7 +80,7 @@ def build_result_entity(
         "RowKey": hashlib.sha256(blob_name.encode("utf-8")).hexdigest(),
         "BlobBackupFilePath": redact(blob_url),
         "OriginalFileName": json.dumps(
-            _derived_names(source_name, barcodes),
+            _derived_names(table_file_name, barcodes),
             ensure_ascii=False,
             separators=(",", ":"),
         ),

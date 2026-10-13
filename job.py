@@ -100,6 +100,8 @@ class JobConfig:
     dpis: Tuple[int, ...]
     workers: int
     fallback: bool
+    file_name: Optional[str] = None
+    store_code: Optional[str] = None
 
 
 def parse_dpis(text: str) -> Tuple[int, ...]:
@@ -155,7 +157,11 @@ def create_job_blob_client(input_url: str) -> BlobClient:
         raise ConfigError(f"INPUT_PDF_URL: {e}") from e
 
 
-def load_config(input_argument: Optional[str] = None) -> JobConfig:
+def load_config(
+    input_argument: Optional[str] = None,
+    file_name_argument: Optional[str] = None,
+    store_code_argument: Optional[str] = None,
+) -> JobConfig:
     env = os.environ.get
     input_url = (input_argument or env("INPUT_PDF_URL") or "").strip() or None
     local_input = (env("LOCAL_INPUT") or "").strip() or None
@@ -193,6 +199,8 @@ def load_config(input_argument: Optional[str] = None) -> JobConfig:
         dpis=dpis,
         workers=workers,
         fallback=env("FALLBACK") == "1",
+        file_name=file_name_argument or None,
+        store_code=store_code_argument,
     )
 
 
@@ -259,6 +267,8 @@ def run(cfg: JobConfig, started: float):
                     name,
                     blob_properties.metadata,
                     result,
+                    original_file_name=cfg.file_name,
+                    store_code=cfg.store_code,
                 )
                 write_result_entity(entity)
                 log.info("upserted scan results in Azure Table %s",
@@ -297,10 +307,20 @@ def main(argv=None) -> int:
         nargs="?",
         help="HTTPS Azure Blob URL of a PDF (query parameters are ignored)",
     )
+    parser.add_argument(
+        "file_name",
+        nargs="?",
+        help="Original file name supplied by the Logic App",
+    )
+    parser.add_argument(
+        "store_code",
+        nargs="?",
+        help="Store code supplied by the Logic App",
+    )
     args = parser.parse_args(argv)
 
     try:
-        cfg = load_config(args.input_pdf_url)
+        cfg = load_config(args.input_pdf_url, args.file_name, args.store_code)
     except ConfigError as e:
         log.error("configuration error: %s", e)
         print(json.dumps(failure("config", e)), flush=True)
