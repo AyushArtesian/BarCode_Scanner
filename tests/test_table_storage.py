@@ -30,6 +30,7 @@ class TableResultEntityTests(unittest.TestCase):
                 ]
             },
             created_at=datetime(2026, 10, 12, 10, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 10, 12, 10, 5, tzinfo=timezone.utc),
         )
 
         self.assertEqual(entity["BlobBackupFilePath"],
@@ -53,6 +54,17 @@ class TableResultEntityTests(unittest.TestCase):
             ],
         )
         self.assertEqual(entity["CreatedAt"], "2026-10-12T10:00:00Z")
+        self.assertEqual(entity["UpdatedAt"], "2026-10-12T10:05:00Z")
+
+    def test_updated_at_must_be_timezone_aware(self):
+        with self.assertRaisesRegex(ValueError, "updated_at must be timezone-aware"):
+            build_result_entity(
+                blob_url="https://alinkdev.blob.core.windows.net/barcodescanner/file.pdf",
+                source_name="file.pdf",
+                source_metadata={},
+                result={"barcodes": []},
+                updated_at=datetime(2026, 10, 12, 10, 5),
+            )
 
     def test_only_stores_barcode_values_matching_validation_regex(self):
         entity = build_result_entity(

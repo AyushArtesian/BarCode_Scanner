@@ -3,6 +3,7 @@ import os
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -325,12 +326,25 @@ class JobWorkflowTests(unittest.TestCase):
             patch("job.scan_pdf", return_value=merger),
             patch("job.write_result_entity") as write_result_entity,
         ):
-            code, result = run(config, time.perf_counter())
+            job_started_at = datetime.now(timezone.utc)
+            code, result = run(
+                config,
+                time.perf_counter(),
+                started_at=job_started_at,
+            )
 
         self.assertEqual(code, EXIT_OK)
         self.assertEqual(result["barcode_count"], 1)
         blob_entity = write_result_entity.call_args.args[0]
         self.assertEqual(blob_entity["BlobBackupFilePath"], config.input_url)
+        self.assertEqual(
+            blob_entity["CreatedAt"],
+            job_started_at.isoformat().replace("+00:00", "Z"),
+        )
+        self.assertGreaterEqual(
+            datetime.fromisoformat(blob_entity["UpdatedAt"].replace("Z", "+00:00")),
+            job_started_at,
+        )
         self.assertEqual(blob_entity["Store"], "North")
         self.assertEqual(json.loads(blob_entity["pagenumber"]),
                          [{"page": 1, "rono": "12345"}])

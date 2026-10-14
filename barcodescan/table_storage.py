@@ -55,6 +55,7 @@ def build_result_entity(
     created_at: datetime | None = None,
     original_file_name: str | None = None,
     store_code: str | None = None,
+    updated_at: datetime | None = None,
 ) -> dict:
     """Build a stable, SAS-free table entity for a scanned source PDF."""
     container, blob_name = parse_blob_url(blob_url, ".pdf")
@@ -77,8 +78,11 @@ def build_result_entity(
             ),
             "",
         )
-    timestamp = created_at or datetime.now(timezone.utc)
-    if timestamp.tzinfo is None:
+    updated_timestamp = updated_at or datetime.now(timezone.utc)
+    created_timestamp = created_at or updated_timestamp
+    if updated_timestamp.tzinfo is None:
+        raise ValueError("updated_at must be timezone-aware")
+    if created_timestamp.tzinfo is None:
         raise ValueError("created_at must be timezone-aware")
 
     return {
@@ -99,7 +103,10 @@ def build_result_entity(
             ensure_ascii=False,
             separators=(",", ":"),
         ),
-        "CreatedAt": timestamp.astimezone(timezone.utc).isoformat().replace(
+        "CreatedAt": created_timestamp.astimezone(timezone.utc).isoformat().replace(
+            "+00:00", "Z"
+        ),
+        "UpdatedAt": updated_timestamp.astimezone(timezone.utc).isoformat().replace(
             "+00:00", "Z"
         ),
     }

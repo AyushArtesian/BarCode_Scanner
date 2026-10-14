@@ -40,6 +40,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 from urllib.parse import unquote, urlsplit
@@ -214,8 +215,9 @@ def failure(stage: str, err, name: str = None) -> dict:
     return {"file": name, "status": "failed", "stage": stage, "error": str(err)}
 
 
-def run(cfg: JobConfig, started: float):
+def run(cfg: JobConfig, started: float, started_at: datetime | None = None):
     """Returns (exit_code, response_dict). Always returns a response."""
+    job_started_at = started_at or datetime.now(timezone.utc)
     name = input_name(cfg)
     settings = Settings(dpis=cfg.dpis, fallback=cfg.fallback)
     source = str(cfg.local_input) if cfg.local_input else redact(cfg.input_url or "")
@@ -267,8 +269,10 @@ def run(cfg: JobConfig, started: float):
                     name,
                     blob_properties.metadata,
                     result,
+                    created_at=job_started_at,
                     original_file_name=cfg.file_name,
                     store_code=cfg.store_code,
+                    updated_at=datetime.now(timezone.utc),
                 )
                 write_result_entity(entity)
                 log.info("upserted scan results in Azure Table %s",
@@ -298,6 +302,7 @@ def main(argv=None) -> int:
     setup_logging()
     signal.signal(signal.SIGTERM, handle_sigterm)
     started = time.perf_counter()
+    job_started_at = datetime.now(timezone.utc)
 
     parser = argparse.ArgumentParser(
         description="Scan an Azure PDF blob and write barcode results to blob metadata."
@@ -326,7 +331,7 @@ def main(argv=None) -> int:
         print(json.dumps(failure("config", e)), flush=True)
         return EXIT_CONFIG
 
-    code, result = run(cfg, started)
+    code, result = run(cfg, started, started_at=job_started_at)
     print(json.dumps(result, ensure_ascii=False), flush=True)   # the response
     log.info("finished status=%s exit=%d", result.get("status"), code)
     return code

@@ -3,7 +3,8 @@
 This project scans a PDF from Azure Blob Storage and upserts one result entity
 per source PDF into the `BarcodeScanResults` Azure Table. Each row records the
 source Blob URL, original and derived split filenames, the `Store` value,
-1-based barcode boundary pages and values, and the latest scan time in UTC.
+1-based barcode boundary pages and values, and the latest scan start and
+completion times in UTC.
 The source blob metadata and PDF content are not changed. The job detects the
 would-be split ranges but does not create or upload split PDFs.
 
@@ -49,7 +50,9 @@ name, so reprocessing the same PDF replaces its row. Its properties are:
 - `pagenumber`: JSON array of `{ "page": 1-based page number, "rono": "barcode value" }`
   entries for detected barcode boundaries whose values match
   `^(?!^.{17}$)\d{5,}$` (at least five digits, excluding exactly 17 characters).
-- `CreatedAt`: UTC time of the latest successful scan.
+- `CreatedAt`: UTC time when the latest scan job started.
+- `UpdatedAt`: UTC time when scanning completed, captured immediately before
+  the result entity is written to the table.
 
 ## Local development
 
