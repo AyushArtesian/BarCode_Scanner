@@ -2,7 +2,7 @@
 
 This project scans a PDF from Azure Blob Storage and upserts one result entity
 per source PDF into the `BarcodeScanResults` Azure Table. Each row records the
-source Blob URL, original and derived split filenames, `Store` metadata,
+source Blob URL, original and derived split filenames, the `Store` value,
 1-based barcode boundary pages and values, and the latest scan time in UTC.
 The source blob metadata and PDF content are not changed. The job detects the
 would-be split ranges but does not create or upload split PDFs.
@@ -39,14 +39,16 @@ Each entity is keyed by source container and a stable hash of the source blob
 name, so reprocessing the same PDF replaces its row. Its properties are:
 
 - `BlobBackupFilePath`: source Blob URL without SAS/query parameters.
-- `OriginalFileName`: JSON array containing the source filename, followed by
-  derived range names. A unique barcode boundary page closes a range; the next
-  range starts on the following page. For example, boundaries on pages 3 and 7
-  produce `file_1_3.pdf` and `file_4_7.pdf`. These names are recorded only;
-  the PDFs are not created.
-- `Store`: source blob's `Store` metadata value, or an empty string if absent.
+- `OriginalFileName`: JSON array containing the Logic App's `FileName`
+  (falling back to the source filename if omitted), followed by derived range
+  names. A unique valid barcode boundary page closes a range; the next range
+  starts on the following page. These names are recorded only; the PDFs are not
+  created.
+- `Store`: Logic App's `StoreCode`, falling back to source blob `Store`
+  metadata or an empty string if omitted.
 - `pagenumber`: JSON array of `{ "page": 1-based page number, "rono": "barcode value" }`
-  entries for detected barcode boundaries.
+  entries for detected barcode boundaries whose values match
+  `^(?!^.{17}$)\d{5,}$` (at least five digits, excluding exactly 17 characters).
 - `CreatedAt`: UTC time of the latest successful scan.
 
 ## Local development

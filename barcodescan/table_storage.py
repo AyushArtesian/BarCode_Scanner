@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -12,6 +13,7 @@ from azure.identity import AzureCliCredential, ManagedIdentityCredential
 from .storage import parse_blob_url, redact, validate_storage_account_url
 
 TABLE_NAME = "BarcodeScanResults"
+_BARCODE_VALUE_PATTERN = re.compile(r"^(?!^.{17}$)\d{5,}$")
 
 _TABLE_HOST_SUFFIXES = (
     (".blob.core.windows.net", ".table.core.windows.net", None),
@@ -58,7 +60,11 @@ def build_result_entity(
     container, blob_name = parse_blob_url(blob_url, ".pdf")
     table_file_name = original_file_name or source_name
     barcodes = sorted(
-        result["barcodes"],
+        (
+            barcode
+            for barcode in result["barcodes"]
+            if _BARCODE_VALUE_PATTERN.match(str(barcode["value"]))
+        ),
         key=lambda barcode: (int(barcode["page"]), str(barcode["value"])),
     )
     store = store_code

@@ -252,7 +252,7 @@ class JobWorkflowTests(unittest.TestCase):
             "dpi": 72,
             "barcodes": [{
                 "type": "Code128",
-                "value": "ABC123",
+                "value": "12345",
                 "method": "test",
                 "confidence": 1.0,
                 "bbox": [0.1, 0.2, 0.8, 0.9],
@@ -304,7 +304,7 @@ class JobWorkflowTests(unittest.TestCase):
             "dpi": 72,
             "barcodes": [{
                 "type": "Code128",
-                "value": "ABC123",
+                "value": "12345",
                 "method": "test",
                 "confidence": 1.0,
                 "bbox": [0.1, 0.2, 0.8, 0.9],
@@ -333,7 +333,7 @@ class JobWorkflowTests(unittest.TestCase):
         self.assertEqual(blob_entity["BlobBackupFilePath"], config.input_url)
         self.assertEqual(blob_entity["Store"], "North")
         self.assertEqual(json.loads(blob_entity["pagenumber"]),
-                         [{"page": 1, "rono": "ABC123"}])
+                         [{"page": 1, "rono": "12345"}])
         self.assertEqual(json.loads(blob_entity["OriginalFileName"]),
                          ["source.pdf", "source_1_1.pdf"])
         self.assertIsNone(blob.updated_metadata)

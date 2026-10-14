@@ -24,9 +24,9 @@ class TableResultEntityTests(unittest.TestCase):
             source_metadata={"store": "North"},
             result={
                 "barcodes": [
-                    {"page": 7, "value": "RONO-2"},
-                    {"page": 3, "value": "RONO-1"},
-                    {"page": 3, "value": "RONO-1B"},
+                    {"page": 7, "value": "12347"},
+                    {"page": 3, "value": "12345"},
+                    {"page": 3, "value": "12346"},
                 ]
             },
             created_at=datetime(2026, 10, 12, 10, 0, tzinfo=timezone.utc),
@@ -47,12 +47,43 @@ class TableResultEntityTests(unittest.TestCase):
         self.assertEqual(
             json.loads(entity["pagenumber"]),
             [
-                {"page": 3, "rono": "RONO-1"},
-                {"page": 3, "rono": "RONO-1B"},
-                {"page": 7, "rono": "RONO-2"},
+                {"page": 3, "rono": "12345"},
+                {"page": 3, "rono": "12346"},
+                {"page": 7, "rono": "12347"},
             ],
         )
         self.assertEqual(entity["CreatedAt"], "2026-10-12T10:00:00Z")
+
+    def test_only_stores_barcode_values_matching_validation_regex(self):
+        entity = build_result_entity(
+            blob_url=(
+                "https://alinkdev.blob.core.windows.net/barcodescanner/"
+                "validated.pdf"
+            ),
+            source_name="validated.pdf",
+            source_metadata={},
+            result={
+                "barcodes": [
+                    {"page": 1, "value": "12345"},
+                    {"page": 2, "value": "1234"},
+                    {"page": 3, "value": "ABCDEF"},
+                    {"page": 4, "value": "12345678901234567"},
+                    {"page": 5, "value": "123456789012345678"},
+                ]
+            },
+        )
+
+        self.assertEqual(
+            json.loads(entity["pagenumber"]),
+            [
+                {"page": 1, "rono": "12345"},
+                {"page": 5, "rono": "123456789012345678"},
+            ],
+        )
+        self.assertEqual(
+            json.loads(entity["OriginalFileName"]),
+            ["validated.pdf", "validated_1_1.pdf", "validated_2_5.pdf"],
+        )
 
     def test_missing_store_and_barcodes_produce_empty_values(self):
         entity = build_result_entity(
