@@ -8,8 +8,7 @@ from .config import FIELDS
 
 
 class PageMerger:
-    """Collects the results of every DPI pass for each page.
-    A barcode is kept once per page (same type and value), recording the first DPI that found it."""
+    """Collects attempted DPI results for each page until its first barcode hit."""
 
     def __init__(self):
         self.pages = {}                       # (file, page) -> state

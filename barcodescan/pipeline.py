@@ -50,3 +50,16 @@ def process_task(task, cfg: Settings):
         return scan_gray(gray, name, page_no, dpi, cfg)
     except Exception as e:
         return {"file": name, "page": page_no, "dpi": dpi, "error": str(e)}
+
+
+def process_page(task, cfg: Settings):
+    """Try a page's DPI passes in order and stop after the first barcode hit.
+    task = (kind, path, name, index, dpis)."""
+    kind, path, name, index, dpis = task
+    records = []
+    for dpi in dpis:
+        rec = process_task((kind, path, name, index, dpi), cfg)
+        records.append(rec)
+        if rec.get("barcodes"):
+            break
+    return records

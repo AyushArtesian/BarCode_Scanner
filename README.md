@@ -28,6 +28,9 @@ The job prints one JSON response to stdout and structured progress logs to
 stderr. An execution is unsuccessful if downloading, scanning all pages, or
 writing the table entity fails. If some pages scan successfully and others
 fail, the job records the barcodes it found and returns a `partial` result.
+Each page is scanned through the configured DPI values in order. Once a pass
+finds a barcode, higher-DPI passes are skipped for that page; pages with no hit
+continue through the remaining values.
 
 ## Table result entity
 

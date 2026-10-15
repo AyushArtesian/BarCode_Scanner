@@ -2,7 +2,7 @@
 """Scan one PDF from Azure Blob Storage and store results in Azure Table Storage.
 
 Flow:
-  download PDF -> scan every page at every DPI -> upsert one table entity
+  download PDF -> scan each page until a barcode is found -> upsert one table entity
   -> print the result
 
 Environment variables (see .env)
@@ -249,7 +249,7 @@ def run(cfg: JobConfig, started: float, started_at: datetime | None = None):
             return EXIT_DOWNLOAD, failure("download", e, name)
 
         def on_progress(done, total):
-            log.info("progress %d/%d tasks, %.0fs elapsed",
+            log.info("progress %d/%d pages, %.0fs elapsed",
                      done, total, time.perf_counter() - started)
 
         try:

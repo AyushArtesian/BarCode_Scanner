@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .config import CHUNKSIZE, DEFAULT_DPIS, PROGRESS_EVERY, Settings
 from .output import PageMerger, write_results
-from .pipeline import init_worker, process_task
+from .pipeline import init_worker, process_page
 from .sources import build_tasks, collect_files
 
 
@@ -28,7 +28,7 @@ def fmt_time(seconds):
 
 
 def run(input_path, output_path, workers, settings: Settings):
-    """Scan one file (or zip, or folder) at every DPI in settings.dpis,
+    """Scan each page through settings.dpis until a barcode is found or passes run out,
     and write one merged result file. Returns stats including elapsed time."""
     started = time.perf_counter()
 
@@ -45,20 +45,20 @@ def run(input_path, output_path, workers, settings: Settings):
             return None
 
         pages = list(build_tasks(files))
-        # Page-major order: page 1 at every DPI, then page 2 at every DPI, and so on.
-        tasks = [(*t, dpi) for t in pages for dpi in settings.dpis]
+        tasks = [(*t, settings.dpis) for t in pages]
         total = len(tasks)
-        print(f"  {len(pages)} page(s) x {len(settings.dpis)} DPI pass(es) = {total} tasks",
+        print(f"  {total} page(s), up to {len(settings.dpis)} DPI pass(es) per page",
               file=sys.stderr)
 
         merger = PageMerger()
         with ProcessPoolExecutor(workers, initializer=init_worker) as ex:
-            for i, rec in enumerate(
-                    ex.map(process_task, tasks, repeat(settings), chunksize=CHUNKSIZE), 1):
-                merger.add(rec)
+            for i, records in enumerate(
+                    ex.map(process_page, tasks, repeat(settings), chunksize=CHUNKSIZE), 1):
+                for rec in records:
+                    merger.add(rec)
                 if i % PROGRESS_EVERY == 0 or i == total:
                     elapsed = time.perf_counter() - started
-                    print(f"\r  task {i}/{total}  elapsed {fmt_time(elapsed)}",
+                    print(f"\r  page {i}/{total}  elapsed {fmt_time(elapsed)}",
                           end="", file=sys.stderr, flush=True)
 
     output_path = Path(output_path)

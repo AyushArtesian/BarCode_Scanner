@@ -28,9 +28,9 @@ SAMPLER_K_SPREAD = 2             # symbol counts tested around the estimate
 SAMPLER_JITTER = (-1.0, 0.0, 1.0)
 
 # ---- scheduling ------------------------------------------------------------
-DEFAULT_DPIS = (100, 150, 170, 200, 250, 350, 500)   # render passes, run in this order for every page
+DEFAULT_DPIS = (100, 150, 170, 200, 250, 350, 500)   # tried in order; stop a page after a hit
 CHUNKSIZE = 2                         # tasks sent to a worker at once
-PROGRESS_EVERY = 10                   # print progress every N finished tasks
+PROGRESS_EVERY = 10                   # print progress every N finished pages
 
 # ---- files -----------------------------------------------------------------
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
@@ -41,7 +41,7 @@ FIELDS = ["file", "page", "status", "barcode_type", "value", "method",
 @dataclass(frozen=True)
 class Settings:
     """Per-run options. Frozen and picklable so it can be sent to worker processes."""
-    dpis: Tuple[int, ...] = DEFAULT_DPIS    # every page is scanned at each of these
+    dpis: Tuple[int, ...] = DEFAULT_DPIS    # tries stop when a page gets a barcode
     fallback: bool = False                  # full-page decode when nothing is found
     debug_dir: Optional[str] = None         # save detection overlays here
     blank_std: float = BLANK_STD
