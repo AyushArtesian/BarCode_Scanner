@@ -56,6 +56,7 @@ def build_result_entity(
     original_file_name: str | None = None,
     store_code: str | None = None,
     updated_at: datetime | None = None,
+    blob_uri: str | None = None,
 ) -> dict:
     """Build a stable, SAS-free table entity for a scanned source PDF."""
     container, blob_name = parse_blob_url(blob_url, ".pdf")
@@ -88,7 +89,7 @@ def build_result_entity(
     return {
         "PartitionKey": container,
         "RowKey": hashlib.sha256(blob_name.encode("utf-8")).hexdigest(),
-        "BlobBackupFilePath": redact(blob_url),
+        "BlobBackupFilePath": blob_uri if blob_uri is not None else "",
         "OriginalFileName": json.dumps(
             _derived_names(table_file_name, barcodes),
             ensure_ascii=False,
@@ -150,5 +151,48 @@ def write_result_entity(entity: dict) -> None:
     try:
         table_client = service_client.create_table_if_not_exists(TABLE_NAME)
         table_client.upsert_entity(entity=entity, mode=UpdateMode.REPLACE)
+    finally:
+        service_client.close()
+
+
+def _format_execution_timestamp(value: str, field_name: str) -> tuple[str, datetime]:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be an ISO 8601 timestamp string")
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(f"{field_name} must be a valid ISO 8601 timestamp") from error
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise ValueError(f"{field_name} must include a timezone")
+    normalized = timestamp.astimezone(timezone.utc)
+    return normalized.isoformat().replace("+00:00", "Z"), normalized
+
+
+def update_execution_timestamps(
+    blob_url: str,
+    started_at: str,
+    ended_at: str,
+) -> None:
+    """Merge ACA execution times into the already-written scan result row."""
+    created_at, started = _format_execution_timestamp(started_at, "started_at")
+    updated_at, ended = _format_execution_timestamp(ended_at, "ended_at")
+    if ended < started:
+        raise ValueError("ended_at must not be earlier than started_at")
+
+    partition_key, blob_name = parse_blob_url(blob_url, ".pdf")
+    row_key = hashlib.sha256(blob_name.encode("utf-8")).hexdigest()
+    service_client = _create_table_service_client()
+    try:
+        table_client = service_client.create_table_if_not_exists(TABLE_NAME)
+        table_client.get_entity(partition_key=partition_key, row_key=row_key)
+        table_client.update_entity(
+            entity={
+                "PartitionKey": partition_key,
+                "RowKey": row_key,
+                "CreatedAt": created_at,
+                "UpdatedAt": updated_at,
+            },
+            mode=UpdateMode.MERGE,
+        )
     finally:
         service_client.close()

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import unittest
@@ -9,6 +10,7 @@ from barcodescan.table_storage import (
     TABLE_NAME,
     build_result_entity,
     table_endpoint_from_blob_url,
+    update_execution_timestamps,
     write_result_entity,
 )
 
@@ -31,11 +33,13 @@ class TableResultEntityTests(unittest.TestCase):
             },
             created_at=datetime(2026, 10, 12, 10, 0, tzinfo=timezone.utc),
             updated_at=datetime(2026, 10, 12, 10, 5, tzinfo=timezone.utc),
+            blob_uri="FileBunkerRawFiles/incoming/invoice.pdf",
         )
 
-        self.assertEqual(entity["BlobBackupFilePath"],
-                         "https://alinkdev.blob.core.windows.net/"
-                         "barcodescanner/incoming/invoice.pdf")
+        self.assertEqual(
+            entity["BlobBackupFilePath"],
+            "FileBunkerRawFiles/incoming/invoice.pdf",
+        )
         self.assertEqual(
             json.loads(entity["OriginalFileName"]),
             [
@@ -109,6 +113,7 @@ class TableResultEntityTests(unittest.TestCase):
         )
 
         self.assertEqual(entity["Store"], "")
+        self.assertEqual(entity["BlobBackupFilePath"], "")
         self.assertEqual(json.loads(entity["OriginalFileName"]), ["empty.pdf"])
         self.assertEqual(json.loads(entity["pagenumber"]), [])
 
@@ -141,6 +146,147 @@ class TableResultEntityTests(unittest.TestCase):
 
 
 class TableStorageClientTests(unittest.TestCase):
+    def test_updates_only_execution_timestamps_on_existing_source_row(self):
+        table_client = Mock()
+        service_client = Mock()
+        service_client.create_table_if_not_exists.return_value = table_client
+        table_client.get_entity.return_value = {
+            "PartitionKey": "barcodescanner",
+            "RowKey": "existing-row",
+            "Store": "SC1",
+            "pagenumber": "[]",
+        }
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AZURE_STORAGE_AUTH_MODE": "managed_identity",
+                    "AZURE_STORAGE_ACCOUNT_URL": (
+                        "https://alinkdev.blob.core.windows.net"
+                    ),
+                },
+                clear=True,
+            ),
+            patch("barcodescan.table_storage.ManagedIdentityCredential"),
+            patch(
+                "barcodescan.table_storage.TableServiceClient",
+                return_value=service_client,
+            ),
+        ):
+            update_execution_timestamps(
+                "https://alinkdev.blob.core.windows.net/barcodescanner/invoice.pdf",
+                "2026-10-14T10:37:57Z",
+                "2026-10-14T10:38:30Z",
+            )
+
+        table_client.get_entity.assert_called_once_with(
+            partition_key="barcodescanner",
+            row_key=hashlib.sha256(b"invoice.pdf").hexdigest(),
+        )
+        updated_entity = table_client.update_entity.call_args.kwargs["entity"]
+        self.assertEqual(updated_entity["PartitionKey"], "barcodescanner")
+        self.assertEqual(
+            updated_entity["RowKey"],
+            hashlib.sha256(b"invoice.pdf").hexdigest(),
+        )
+        self.assertEqual(updated_entity["CreatedAt"], "2026-10-14T10:37:57Z")
+        self.assertEqual(updated_entity["UpdatedAt"], "2026-10-14T10:38:30Z")
+        table_client.update_entity.assert_called_once_with(
+            entity=updated_entity,
+            mode=UpdateMode.MERGE,
+        )
+        service_client.close.assert_called_once_with()
+
+    def test_execution_timestamps_normalize_offsets_to_utc(self):
+        table_client = Mock()
+        service_client = Mock()
+        service_client.create_table_if_not_exists.return_value = table_client
+        table_client.get_entity.return_value = {
+            "PartitionKey": "barcodescanner",
+            "RowKey": "existing-row",
+        }
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AZURE_STORAGE_AUTH_MODE": "managed_identity",
+                    "AZURE_STORAGE_ACCOUNT_URL": (
+                        "https://alinkdev.blob.core.windows.net"
+                    ),
+                },
+                clear=True,
+            ),
+            patch("barcodescan.table_storage.ManagedIdentityCredential"),
+            patch(
+                "barcodescan.table_storage.TableServiceClient",
+                return_value=service_client,
+            ),
+        ):
+            update_execution_timestamps(
+                "https://alinkdev.blob.core.windows.net/barcodescanner/invoice.pdf",
+                "2026-10-14T12:37:57+02:00",
+                "2026-10-14T12:38:30+02:00",
+            )
+
+        self.assertEqual(
+            table_client.update_entity.call_args.kwargs["entity"]["CreatedAt"],
+            "2026-10-14T10:37:57Z",
+        )
+        self.assertEqual(
+            table_client.update_entity.call_args.kwargs["entity"]["UpdatedAt"],
+            "2026-10-14T10:38:30Z",
+        )
+
+    def test_rejects_invalid_or_reversed_execution_timestamps(self):
+        blob_url = (
+            "https://alinkdev.blob.core.windows.net/barcodescanner/invoice.pdf"
+        )
+        invalid_pairs = (
+            ("not-a-time", "2026-10-14T10:38:30Z"),
+            ("2026-10-14T10:38:30Z", "2026-10-14T10:37:57Z"),
+            ("2026-10-14T10:37:57", "2026-10-14T10:38:30Z"),
+        )
+
+        for started_at, ended_at in invalid_pairs:
+            with self.subTest(started_at=started_at, ended_at=ended_at):
+                with self.assertRaises(ValueError):
+                    update_execution_timestamps(blob_url, started_at, ended_at)
+
+    def test_missing_source_row_is_not_silently_created(self):
+        table_client = Mock()
+        service_client = Mock()
+        service_client.create_table_if_not_exists.return_value = table_client
+        table_client.get_entity.side_effect = RuntimeError("entity not found")
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AZURE_STORAGE_AUTH_MODE": "managed_identity",
+                    "AZURE_STORAGE_ACCOUNT_URL": (
+                        "https://alinkdev.blob.core.windows.net"
+                    ),
+                },
+                clear=True,
+            ),
+            patch("barcodescan.table_storage.ManagedIdentityCredential"),
+            patch(
+                "barcodescan.table_storage.TableServiceClient",
+                return_value=service_client,
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "entity not found"):
+                update_execution_timestamps(
+                    "https://alinkdev.blob.core.windows.net/barcodescanner/invoice.pdf",
+                    "2026-10-14T10:37:57Z",
+                    "2026-10-14T10:38:30Z",
+                )
+
+        table_client.update_entity.assert_not_called()
+        service_client.close.assert_called_once_with()
+
     def test_managed_identity_creates_table_and_replaces_entity(self):
         entity = {"PartitionKey": "barcodescanner", "RowKey": "stable-key"}
         table_client = Mock()

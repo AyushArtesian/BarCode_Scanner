@@ -39,7 +39,7 @@ doesn't upload a backup or split PDFs.
 Each entity is keyed by source container and a stable hash of the source blob
 name, so reprocessing the same PDF replaces its row. Its properties are:
 
-- `BlobBackupFilePath`: source Blob URL without SAS/query parameters.
+- `BlobBackupFilePath`: the `FilePath` value supplied by the Logic App request.
 - `OriginalFileName`: JSON array containing the Logic App's `FileName`
   (falling back to the source filename if omitted), followed by derived range
   names. A unique valid barcode boundary page closes a range; the next range
@@ -50,9 +50,11 @@ name, so reprocessing the same PDF replaces its row. Its properties are:
 - `pagenumber`: JSON array of `{ "page": 1-based page number, "rono": "barcode value" }`
   entries for detected barcode boundaries whose values match
   `^(?!^.{17}$)\d{5,}$` (at least five digits, excluding exactly 17 characters).
-- `CreatedAt`: UTC time when the latest scan job started.
-- `UpdatedAt`: UTC time when scanning completed, captured immediately before
-  the result entity is written to the table.
+- `CreatedAt`: UTC start time reported by the completed Container Apps Job
+  execution.
+- `UpdatedAt`: UTC end time reported by the completed Container Apps Job
+  execution. The row initially contains approximate in-container timestamps;
+  the Logic App must finalize it after the execution has ended.
 
 ## Local development
 
@@ -334,6 +336,7 @@ $subscriptionId = az account show --query id --output tsv
 $pdfUrl = "https://alinkdev.blob.core.windows.net/barcodescanner/test2.pdf"
 $fileName = "test2.pdf"
 $storeCode = "North"
+$filePath = "FileBunkerRawFiles/test2.pdf"
 $startUrl = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.App/jobs/$jobName/start?api-version=2026-07-01"
 $body = @{
   containers = @(
@@ -341,7 +344,7 @@ $body = @{
       name = "alynk-filebunker-dev-cont-job"
       image = $image
       command = @("python", "/app/job.py")
-      args = @($pdfUrl, $fileName, $storeCode)
+      args = @($pdfUrl, $fileName, $storeCode, $filePath)
       resources = @{ cpu = 2; memory = "4Gi" }
       env = @(
         @{ name = "AZURE_STORAGE_AUTH_MODE"; value = "managed_identity" },
@@ -369,7 +372,7 @@ and inspect the execution logs. Verify the row in the storage account's
 **Tables** section under `BarcodeScanResults`.
 The container override must include the container name, image, resources,
 command, and environment values; the `args` array carries the PDF URL, original
-file name, and store code, in that order.
+file name, store code, and request `FilePath`, in that order.
 
 ### Start this job from a Logic App
 
@@ -377,9 +380,12 @@ Use the Container Apps Jobs **Start** REST operation to start one execution per
 PDF. Unlike changing `INPUT_PDF_URL` on the shared job and then starting it,
 the per-execution container override passes the URL without racing other runs.
 The job image's entry point is `python /app/job.py`; its positional arguments
-are the PDF URL, original file name, and store code, in that order. The
-original file name is stored in the table's `OriginalFileName` value and the
-store code in its `Store` value. Do not use `BLOB_URL`—the job does not read
+are the PDF URL, original file name, store code, and request `FilePath`, in
+that order. The original file name is stored in `OriginalFileName`, the store
+code in `Store`, and `FilePath` in `BlobBackupFilePath`. Pass the request value
+through (for example, with a `Compose_FilePath` action containing
+`@{triggerBody()?['FilePath']}`). The PDF URL remains the source for downloading
+and identifying the result row. Do not use `BLOB_URL`—the job does not read
 that variable.
 
 Configure an HTTP action:
@@ -459,7 +465,8 @@ Example body (replace the image tag and Logic App expression with your values):
       "args": [
         "@{outputs('Compose_BlobUrl')}",
         "@{outputs('Compose_FileName')}",
-        "@{outputs('Compose_StoreCode')}"
+        "@{outputs('Compose_StoreCode')}",
+        "@{outputs('Compose_FilePath')}"
       ],
       "resources": {
         "cpu": 2,
@@ -498,9 +505,41 @@ container and `Storage Table Data Contributor` at the storage-account scope;
 the existing user-assigned identity can remain attached for ACR image pulls.
 The Logic App identity does not need Blob or Table data permissions.
 
-The start response includes an execution ID. Use the Jobs execution
-`GET` operation if the workflow needs to poll completion; the API's start
-response alone only confirms that Azure accepted/started the execution.
+The start response includes an execution reference (or a `Location` header
+when Azure returns `202 Accepted`). Use that specific execution—not the
+latest execution in a list—when polling, since Logic App triggers can overlap.
+The execution resource's `properties.startTime` and `properties.endTime` are
+the timestamps shown in the Azure portal.
+
+### Store the exact execution timestamps
+
+The scan container cannot know the execution's final `endTime` before it exits.
+After polling the original execution until `properties.endTime` is populated,
+and confirming its `properties.status` is `Succeeded`, start the same job a
+second time in finalization mode. Use the same image, container name, CPU and
+memory, and the same table-auth environment (`AZURE_STORAGE_AUTH_MODE` and
+`AZURE_STORAGE_ACCOUNT_URL`). Set the command to `python /app/job.py` and the
+arguments to:
+
+```json
+[
+  "--finalize-execution",
+  "--execution-start-time",
+  "@{body('Get_Execution')?['properties']?['startTime']}",
+  "--execution-end-time",
+  "@{body('Get_Execution')?['properties']?['endTime']}",
+  "@{outputs('Compose_BlobUrl')}"
+]
+```
+
+Replace `Get_Execution` and `Compose_BlobUrl` with the names of your Logic App
+actions. The PDF URL must be the same source URL passed to the scan execution.
+The finalizer merges only `CreatedAt` and `UpdatedAt` into the stable result
+row, and fails visibly if the row is missing or the execution times are
+invalid. Wait for the finalizer execution to succeed before returning a
+successful Logic App response if callers need to rely on the final timestamps.
+If the scan execution fails, handle that failure rather than starting a
+finalizer for a result row that might not exist.
 
 ### Adjustments and operations
 

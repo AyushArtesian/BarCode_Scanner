@@ -3,10 +3,12 @@ import os
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from pypdf import PdfWriter
 from azure.core import MatchConditions
@@ -16,7 +18,16 @@ from barcodescan.storage import (
     download_blob_to,
     parse_blob_url,
 )
-from job import ConfigError, EXIT_OK, EXIT_SCAN, EXIT_WRITE, JobConfig, load_config, run
+from job import (
+    ConfigError,
+    EXIT_OK,
+    EXIT_SCAN,
+    EXIT_WRITE,
+    JobConfig,
+    load_config,
+    main,
+    run,
+)
 
 DUMMY_CONNECTION_STRING = (
     "DefaultEndpointsProtocol=https;AccountName=alinkdev;"
@@ -79,11 +90,22 @@ class BlobUrlTests(unittest.TestCase):
     def test_load_config_accepts_url_and_connection_string_without_sas(self):
         url = "https://alinkdev.blob.core.windows.net/barcodescanner/file.pdf"
 
-        config = load_config(url)
+        config = load_config(
+            url,
+            "invoice.pdf",
+            "North",
+            "FileBunkerRawFiles/incoming/invoice.pdf",
+        )
 
         self.assertEqual(config.input_url, url)
         self.assertEqual(config.blob_client.url, url)
         self.assertEqual(config.dpis, (150, 200))
+        self.assertEqual(config.file_name, "invoice.pdf")
+        self.assertEqual(config.store_code, "North")
+        self.assertEqual(
+            config.blob_uri,
+            "FileBunkerRawFiles/incoming/invoice.pdf",
+        )
 
     @patch.dict(
         os.environ,
@@ -320,6 +342,7 @@ class JobWorkflowTests(unittest.TestCase):
             dpis=(72,),
             workers=1,
             fallback=False,
+            blob_uri="FileBunkerRawFiles/source.pdf",
         )
 
         with (
@@ -336,7 +359,10 @@ class JobWorkflowTests(unittest.TestCase):
         self.assertEqual(code, EXIT_OK)
         self.assertEqual(result["barcode_count"], 1)
         blob_entity = write_result_entity.call_args.args[0]
-        self.assertEqual(blob_entity["BlobBackupFilePath"], config.input_url)
+        self.assertEqual(
+            blob_entity["BlobBackupFilePath"],
+            "FileBunkerRawFiles/source.pdf",
+        )
         self.assertEqual(
             blob_entity["CreatedAt"],
             job_started_at.isoformat().replace("+00:00", "Z"),
@@ -383,6 +409,64 @@ class JobWorkflowTests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertEqual(self.source.read_bytes(), source_bytes)
         write_result_entity.assert_not_called()
+
+
+    def test_finalize_execution_command_updates_timestamps_without_scanning(self):
+        blob_url = (
+            "https://alinkprodstorage.blob.core.windows.net/"
+            "FileBunkerRawFiles/source.pdf"
+        )
+        started_at = "2026-10-14T10:37:57Z"
+        ended_at = "2026-10-14T10:38:30Z"
+        output = StringIO()
+
+        with (
+            redirect_stdout(output),
+            patch("job.setup_logging"),
+            patch("job.signal.signal"),
+            patch("job.update_execution_timestamps") as finalize,
+            patch("job.scan_pdf") as scan,
+        ):
+            code = main([
+                "--finalize-execution",
+                "--execution-start-time", started_at,
+                "--execution-end-time", ended_at,
+                blob_url,
+            ])
+
+        self.assertEqual(code, EXIT_OK)
+        finalize.assert_called_once_with(blob_url, started_at, ended_at)
+        scan.assert_not_called()
+        self.assertEqual(
+            json.loads(output.getvalue()),
+            {
+                "status": "completed",
+                "file": "source.pdf",
+                "created_at": started_at,
+                "updated_at": ended_at,
+            },
+        )
+
+    def test_scan_command_passes_fourth_positional_file_path_to_config(self):
+        input_values = [
+            "https://alinkprodstorage.blob.core.windows.net/raw/source.pdf",
+            "source.pdf",
+            "SC1",
+            "FileBunkerRawFiles/2026/source.pdf",
+        ]
+        output = StringIO()
+
+        with (
+            redirect_stdout(output),
+            patch("job.setup_logging"),
+            patch("job.signal.signal"),
+            patch("job.load_config", return_value=Mock()) as load_config_mock,
+            patch("job.run", return_value=(EXIT_OK, {"status": "ok"})),
+        ):
+            code = main(input_values)
+
+        self.assertEqual(code, EXIT_OK)
+        load_config_mock.assert_called_once_with(*input_values)
 
 
 if __name__ == "__main__":

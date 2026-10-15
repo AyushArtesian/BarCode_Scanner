@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 from urllib.parse import unquote, urlsplit
 
+from azure.core.exceptions import AzureError
 from azure.identity import AzureCliCredential, ManagedIdentityCredential
 from azure.storage.blob import BlobClient, BlobProperties
 from dotenv import load_dotenv
@@ -65,6 +66,7 @@ from barcodescan.storage import (  # noqa: E402
 )
 from barcodescan.table_storage import (  # noqa: E402
     build_result_entity,
+    update_execution_timestamps,
     write_result_entity,
 )
 
@@ -103,6 +105,7 @@ class JobConfig:
     fallback: bool
     file_name: Optional[str] = None
     store_code: Optional[str] = None
+    blob_uri: Optional[str] = None
 
 
 def parse_dpis(text: str) -> Tuple[int, ...]:
@@ -162,6 +165,7 @@ def load_config(
     input_argument: Optional[str] = None,
     file_name_argument: Optional[str] = None,
     store_code_argument: Optional[str] = None,
+    blob_uri_argument: Optional[str] = None,
 ) -> JobConfig:
     env = os.environ.get
     input_url = (input_argument or env("INPUT_PDF_URL") or "").strip() or None
@@ -202,6 +206,7 @@ def load_config(
         fallback=env("FALLBACK") == "1",
         file_name=file_name_argument or None,
         store_code=store_code_argument,
+        blob_uri=blob_uri_argument,
     )
 
 
@@ -273,6 +278,7 @@ def run(cfg: JobConfig, started: float, started_at: datetime | None = None):
                     original_file_name=cfg.file_name,
                     store_code=cfg.store_code,
                     updated_at=datetime.now(timezone.utc),
+                    blob_uri=cfg.input_url,
                 )
                 write_result_entity(entity)
                 log.info("upserted scan results in Azure Table %s",
@@ -305,7 +311,7 @@ def main(argv=None) -> int:
     job_started_at = datetime.now(timezone.utc)
 
     parser = argparse.ArgumentParser(
-        description="Scan an Azure PDF blob and write barcode results to blob metadata."
+        description="Scan an Azure PDF blob or finalize its ACA execution timestamps."
     )
     parser.add_argument(
         "input_pdf_url",
@@ -322,10 +328,72 @@ def main(argv=None) -> int:
         nargs="?",
         help="Store code supplied by the Logic App",
     )
+    parser.add_argument(
+        "blob_uri",
+        nargs="?",
+        help="Blob URI value supplied by the Logic App for BlobBackupFilePath",
+    )
+    parser.add_argument(
+        "--finalize-execution",
+        action="store_true",
+        help="update an existing result row with the completed ACA execution times",
+    )
+    parser.add_argument(
+        "--execution-start-time",
+        help="ACA execution properties.startTime in ISO 8601 format",
+    )
+    parser.add_argument(
+        "--execution-end-time",
+        help="ACA execution properties.endTime in ISO 8601 format",
+    )
     args = parser.parse_args(argv)
 
+    if args.finalize_execution:
+        if not args.input_pdf_url:
+            error = ConfigError("a source PDF URL is required to finalize timestamps")
+            print(json.dumps(failure("config", error)), flush=True)
+            return EXIT_CONFIG
+        if not args.execution_start_time or not args.execution_end_time:
+            error = ConfigError(
+                "--execution-start-time and --execution-end-time are required"
+            )
+            print(json.dumps(failure("config", error)), flush=True)
+            return EXIT_CONFIG
+        source_name = unquote(Path(urlsplit(args.input_pdf_url).path).name)
+        try:
+            update_execution_timestamps(
+                args.input_pdf_url,
+                args.execution_start_time,
+                args.execution_end_time,
+            )
+        except (AzureError, ValueError) as error:
+            log.exception("finalizing ACA execution timestamps failed")
+            print(
+                json.dumps(failure("finalize", error, source_name)),
+                flush=True,
+            )
+            return EXIT_WRITE
+        print(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "file": source_name,
+                    "created_at": args.execution_start_time,
+                    "updated_at": args.execution_end_time,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        return EXIT_OK
+
     try:
-        cfg = load_config(args.input_pdf_url, args.file_name, args.store_code)
+        cfg = load_config(
+            args.input_pdf_url,
+            args.file_name,
+            args.store_code,
+            args.blob_uri,
+        )
     except ConfigError as e:
         log.error("configuration error: %s", e)
         print(json.dumps(failure("config", e)), flush=True)
