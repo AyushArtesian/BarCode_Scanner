@@ -111,6 +111,20 @@ class BlobUrlTests(unittest.TestCase):
         os.environ,
         {
             "AZURE_STORAGE_CONNECTION_STRING": DUMMY_CONNECTION_STRING,
+        },
+        clear=True,
+    )
+    def test_load_config_defaults_to_the_six_final_dpi_passes(self):
+        config = load_config(
+            "https://alinkdev.blob.core.windows.net/barcodescanner/file.pdf"
+        )
+
+        self.assertEqual(config.dpis, (100, 150, 200, 300, 600, 900))
+
+    @patch.dict(
+        os.environ,
+        {
+            "AZURE_STORAGE_CONNECTION_STRING": DUMMY_CONNECTION_STRING,
             "INPUT_PDF_URL": (
                 "https://alinkdev.blob.core.windows.net/barcodescanner/file.pdf"
             ),

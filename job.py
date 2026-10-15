@@ -12,7 +12,7 @@ Environment variables (see .env)
   INPUT_PDF_URL                   optional fallback when no URL argument is passed
   LOCAL_INPUT                     optional local PDF path for development/testing
   LOCAL_OUTPUT_DIR                optional folder for a local JSON copy
-  SCAN_DPIS                       default "150,170,200,250"
+  SCAN_DPIS                       default "100,150,200,300,600,900"
   WORKERS                         default available CPU count - 1
   FALLBACK                        "1" enables the slow full-page decode
 
@@ -278,7 +278,7 @@ def run(cfg: JobConfig, started: float, started_at: datetime | None = None):
                     original_file_name=cfg.file_name,
                     store_code=cfg.store_code,
                     updated_at=datetime.now(timezone.utc),
-                    blob_uri=cfg.input_url,
+                    blob_uri=cfg.blob_uri,
                 )
                 write_result_entity(entity)
                 log.info("upserted scan results in Azure Table %s",
