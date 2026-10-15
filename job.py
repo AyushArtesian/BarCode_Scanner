@@ -12,7 +12,7 @@ Environment variables (see .env)
   INPUT_PDF_URL                   optional fallback when no URL argument is passed
   LOCAL_INPUT                     optional local PDF path for development/testing
   LOCAL_OUTPUT_DIR                optional folder for a local JSON copy
-  SCAN_DPIS                       default "100,150,200,300,600,900"
+  SCAN_DPIS                       default "100,150,170,200,250,350,500"
   WORKERS                         default available CPU count - 1
   FALLBACK                        "1" enables the slow full-page decode
 

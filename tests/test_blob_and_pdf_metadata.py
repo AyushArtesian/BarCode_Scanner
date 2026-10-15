@@ -114,12 +114,12 @@ class BlobUrlTests(unittest.TestCase):
         },
         clear=True,
     )
-    def test_load_config_defaults_to_the_six_final_dpi_passes(self):
+    def test_load_config_defaults_to_the_seven_dpi_passes(self):
         config = load_config(
             "https://alinkdev.blob.core.windows.net/barcodescanner/file.pdf"
         )
 
-        self.assertEqual(config.dpis, (100, 150, 200, 300, 600, 900))
+        self.assertEqual(config.dpis, (100, 150, 170, 200, 250, 350, 500))
 
     @patch.dict(
         os.environ,

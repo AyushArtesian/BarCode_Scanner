@@ -28,7 +28,7 @@ SAMPLER_K_SPREAD = 2             # symbol counts tested around the estimate
 SAMPLER_JITTER = (-1.0, 0.0, 1.0)
 
 # ---- scheduling ------------------------------------------------------------
-DEFAULT_DPIS = (100, 150, 200, 300, 600, 900)   # render passes, run in this order for every page
+DEFAULT_DPIS = (100, 150, 170, 200, 250, 350, 500)   # render passes, run in this order for every page
 CHUNKSIZE = 2                         # tasks sent to a worker at once
 PROGRESS_EVERY = 10                   # print progress every N finished tasks
 

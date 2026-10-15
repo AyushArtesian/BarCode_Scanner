@@ -170,7 +170,7 @@ az containerapp job create `
   --env-vars `
     "AZURE_STORAGE_AUTH_MODE=managed_identity" `
     "AZURE_STORAGE_ACCOUNT_URL=$storageAccountUrl" `
-    "SCAN_DPIS=100,150,200,300,600,900" `
+    "SCAN_DPIS=100,150,170,200,250,350,500" `
     "WORKERS=2"
 
 # Keep the user-assigned identity for ACR pulls and add a system identity for storage access.
@@ -258,7 +258,7 @@ az containerapp job update `
     "AZURE_STORAGE_AUTH_MODE=managed_identity" `
     "AZURE_STORAGE_ACCOUNT_URL=https://$storageAccountName.blob.core.windows.net" `
     "WORKERS=2" `
-    "SCAN_DPIS=100,150,200,300,600,900"
+    "SCAN_DPIS=100,150,170,200,250,350,500"
 if ($LASTEXITCODE -ne 0) {
   throw "Container Apps Job update failed"
 }
@@ -350,7 +350,7 @@ $body = @{
         @{ name = "AZURE_STORAGE_AUTH_MODE"; value = "managed_identity" },
         @{ name = "AZURE_STORAGE_ACCOUNT_URL"; value = "https://alinkdev.blob.core.windows.net" },
         @{ name = "WORKERS"; value = "2" },
-        @{ name = "SCAN_DPIS"; value = "100,150,200,300,600,900" }
+        @{ name = "SCAN_DPIS"; value = "100,150,170,200,250,350,500" }
       )
     }
   )
@@ -487,7 +487,7 @@ Example body (replace the image tag and Logic App expression with your values):
         },
         {
           "name": "SCAN_DPIS",
-          "value": "100,150,200,300,600,900"
+          "value": "100,150,170,200,250,350,500"
         }
       ]
     }
