@@ -34,6 +34,10 @@ finds a valid barcode, higher-DPI passes are skipped for that page; invalid
 decoded values do not stop the remaining passes. RO scans process every page.
 Deal scans process only the first page, trying the configured DPIs until a
 valid barcode is found or the passes are exhausted.
+If the supplied Logic App `FileName` (or the source filename when it is omitted)
+has an underscore-separated first segment containing `booklet` (case-insensitive),
+the job skips barcode scanning and uses the second segment, with `.pdf` removed,
+as an RO repair-order value on page 1.
 
 Every scan invocation must pass `FolderDetailType` as the fifth positional
 argument, after the blob URI: `RO` or `Deal` (case-insensitive). The preceding

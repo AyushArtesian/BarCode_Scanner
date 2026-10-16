@@ -458,6 +458,60 @@ class JobWorkflowTests(unittest.TestCase):
         self.assertEqual(write_failure["stage"], "write")
         self.assertEqual(blob.updated_metadata, None)
 
+    def test_booklet_filename_skips_scan_and_writes_filename_record_key(self):
+        class FakeDownloader:
+            def __init__(self, source_bytes):
+                self.source_bytes = source_bytes
+
+            def readinto(self, stream):
+                stream.write(self.source_bytes)
+
+        class FakeBlob:
+            def __init__(self, source_bytes):
+                self.source_bytes = source_bytes
+                self.properties = SimpleNamespace(
+                    etag='"blob-etag"',
+                    metadata={"Store": "North"},
+                )
+
+            def get_blob_properties(self):
+                return self.properties
+
+            def download_blob(self, **kwargs):
+                return FakeDownloader(self.source_bytes)
+
+        blob = FakeBlob(self.source.read_bytes())
+        config = JobConfig(
+            input_url=(
+                "https://alinkdev.blob.core.windows.net/"
+                "barcodescanner/source.pdf"
+            ),
+            local_input=None,
+            blob_client=blob,
+            local_output_dir=None,
+            dpis=(72,),
+            workers=1,
+            fallback=False,
+            folder_detail_type="Deal",
+            file_name="BookletInspection_12345.pdf",
+            blob_uri="FileBunkerRawFiles/source.pdf",
+        )
+
+        with (
+            patch("job.scan_pdf") as scan,
+            patch("job.write_result_entity") as write_result_entity,
+        ):
+            code, result = run(config, time.perf_counter())
+
+        self.assertEqual(code, EXIT_OK)
+        scan.assert_not_called()
+        self.assertEqual(result["barcodes"][0]["value"], "12345")
+        entity = write_result_entity.call_args.args[0]
+        self.assertEqual(
+            json.loads(entity["pagenumber"]),
+            [{"page": 1, "rono": "12345"}],
+        )
+
     def test_scan_failure_does_not_write_a_table_entity_or_change_local_pdf(self):
         source_bytes = self.source.read_bytes()
         merger = PageMerger()

@@ -230,6 +230,13 @@ def input_name(cfg: JobConfig) -> str:
     return unquote(Path(urlsplit(cfg.input_url or "").path).name)
 
 
+def booklet_record_key(file_name: str) -> Optional[str]:
+    file_name_array = file_name.split("_")
+    if len(file_name_array) > 1 and "booklet" in file_name_array[0].lower():
+        return file_name_array[1].replace(".pdf", "")
+    return None
+
+
 def failure(stage: str, err, name: str = None) -> dict:
     return {"file": name, "status": "failed", "stage": stage, "error": str(err)}
 
@@ -270,16 +277,47 @@ def run(cfg: JobConfig, started: float, started_at: datetime | None = None):
             log.info("progress %d/%d pages, %.0fs elapsed",
                      done, total, time.perf_counter() - started)
 
-        try:
-            merger = scan_pdf(pdf_path, cfg.workers, settings,
-                              name=name, progress=on_progress,
-                              first_page_only=cfg.folder_detail_type == "Deal")
-        except Exception as e:
-            log.exception("scan failed")
-            return EXIT_SCAN, failure("scan", e, name)
+        record_key = booklet_record_key(cfg.file_name or name)
+        result_folder_detail_type = (
+            "RO" if record_key is not None else cfg.folder_detail_type
+        )
+        if record_key is not None:
+            elapsed = time.perf_counter() - started
+            log.info("using booklet filename record key without scanning PDF")
+            result = {
+                "file": name,
+                "status": "ok",
+                "dpis": [],
+                "pages_total": 1,
+                "pages_with_barcodes": 1,
+                "barcode_count": 1,
+                "error_count": 0,
+                "seconds": round(elapsed, 1),
+                "barcodes": [{
+                    "page": 1,
+                    "type": "Filename",
+                    "value": record_key,
+                    "dpi": None,
+                    "bbox": None,
+                }],
+                "error_pages": [],
+            }
+        else:
+            try:
+                merger = scan_pdf(
+                    pdf_path,
+                    cfg.workers,
+                    settings,
+                    name=name,
+                    progress=on_progress,
+                    first_page_only=cfg.folder_detail_type == "Deal",
+                )
+            except Exception as e:
+                log.exception("scan failed")
+                return EXIT_SCAN, failure("scan", e, name)
 
-        elapsed = time.perf_counter() - started
-        result = build_result(merger, name, settings, elapsed)
+            elapsed = time.perf_counter() - started
+            result = build_result(merger, name, settings, elapsed)
         if result["status"] == "error":
             log.error("every page failed; source PDF was not changed")
             return EXIT_SCAN, result
@@ -298,7 +336,7 @@ def run(cfg: JobConfig, started: float, started_at: datetime | None = None):
                     store_code=cfg.store_code,
                     updated_at=datetime.now(timezone.utc),
                     blob_uri=cfg.blob_uri,
-                    folder_detail_type=cfg.folder_detail_type,
+                    folder_detail_type=result_folder_detail_type,
                 )
                 write_result_entity(entity)
                 log.info("upserted scan results in Azure Table %s",
