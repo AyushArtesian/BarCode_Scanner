@@ -5,10 +5,9 @@ _RO_VALUE_PATTERN = re.compile(r"^(?!^.{17}$)\d{5,}$")
 _DEAL_VALUE_PATTERN = re.compile(
     r"^[schoSCHO]+-[A-Za-z0-9]+(-[A-Za-z0-9]+)"
 )
-_DEAL_NUMBER_PATTERN = re.compile(r"[+-]?[0-9]+")
+_INT32_PATTERN = re.compile(r"[+-]?[0-9]+", re.ASCII)
 _INT32_MAX_TEXT = str(2**31 - 1)
-_INT32_MIN = -(2**31)
-_INT32_MAX = 2**31 - 1
+_INT32_MIN_MAGNITUDE_TEXT = str(2**31)
 
 
 def normalize_folder_detail_type(value: str) -> str:
@@ -19,6 +18,19 @@ def normalize_folder_detail_type(value: str) -> str:
     if normalized == "deal":
         return "Deal"
     raise ValueError("FolderDetailType must be RO or Deal")
+
+
+def _is_int32(value: str) -> bool:
+    stripped = value.strip()
+    if _INT32_PATTERN.fullmatch(stripped) is None:
+        return False
+
+    negative = stripped.startswith("-")
+    digits = stripped.lstrip("+-").lstrip("0") or "0"
+    limit = _INT32_MIN_MAGNITUDE_TEXT if negative else _INT32_MAX_TEXT
+    return len(digits) < len(limit) or (
+        len(digits) == len(limit) and digits <= limit
+    )
 
 
 def is_valid_barcode(value: object, folder_detail_type: str) -> bool:
@@ -49,14 +61,20 @@ def is_valid_barcode(value: object, folder_detail_type: str) -> bool:
         return False
 
     details = text.split("-")
-    if len(details) == 4 and details[2].casefold() == "d":
-        number_text = details[3].strip()
-        if _DEAL_NUMBER_PATTERN.fullmatch(number_text) is None:
-            return False
-        try:
-            deal_number = int(number_text)
-        except ValueError:
-            return False
-        if not _INT32_MIN <= deal_number <= _INT32_MAX:
-            return False
-    return True
+    return not (
+        len(details) == 4
+        and details[2].casefold() == "d"
+        and not _is_int32(details[3])
+    )
+
+
+def deal_record_key(value: str) -> str:
+    """Extract the record key using the .NET DealFileProcessor split rules."""
+    details = value.split("-")
+    if len(details) > 3:
+        code = details[2].casefold()
+        if code == "v":
+            return details[3]
+        if code in {"d", "dd"}:
+            return "-" + details[4] if len(details) > 4 else details[3]
+    return details[2]

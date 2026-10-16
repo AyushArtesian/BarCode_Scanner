@@ -63,9 +63,11 @@ property.
   entries for barcode values valid for the supplied folder type. RO values
   match `^(?!^.{17}$)\d{5,}$` (at least five digits, excluding exactly 17
   characters) and must parse as a nonnegative signed 32-bit integer. Deal values
-  match `^[schoSCHO]+-[A-Za-z0-9]+(-[A-Za-z0-9]+)`;
-  when a value has four hyphen-separated parts and the third part is `D`,
-  case-insensitively, the fourth part must parse as an integer.
+  match `^[schoSCHO]+-[A-Za-z0-9]+(-[A-Za-z0-9]+)`. If a Deal value has exactly
+  four hyphen-separated parts and part 3 is `D` (case-insensitive), part 4 must
+  parse as a signed 32-bit integer. In `pagenumber`, Deal values are stored as
+  the .NET-derived record key: part 4 for `V`, part 4 for four-part `D`/`DD`,
+  `-` plus part 5 for longer `D`/`DD` values, and part 3 for other codes.
 - `CreatedAt`: UTC start time reported by the completed Container Apps Job
   execution.
 - `UpdatedAt`: UTC end time reported by the completed Container Apps Job

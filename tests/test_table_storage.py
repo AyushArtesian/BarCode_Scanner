@@ -120,8 +120,8 @@ class TableResultEntityTests(unittest.TestCase):
             result={
                 "barcodes": [
                     {"page": 1, "value": "SCHO-ABC-D-123"},
-                    {"page": 2, "value": "SCHO-ABC-D-invalid"},
-                    {"page": 3, "value": "12345"},
+                    {"page": 2, "value": "SCHO-ABC-V-invalid"},
+                    {"page": 3, "value": "OTHER-ABC-D-123"},
                 ]
             },
             folder_detail_type="Deal",
@@ -129,11 +129,43 @@ class TableResultEntityTests(unittest.TestCase):
 
         self.assertEqual(
             json.loads(entity["pagenumber"]),
-            [{"page": 1, "rono": "SCHO-ABC-D-123"}],
+            [
+                {"page": 1, "rono": "123"},
+                {"page": 2, "rono": "invalid"},
+            ],
         )
         self.assertEqual(
             json.loads(entity["OriginalFileName"]),
-            ["deal.pdf", "deal_1_1.pdf"],
+            ["deal.pdf", "deal_1_1.pdf", "deal_2_2.pdf"],
+        )
+
+    def test_deal_table_values_use_dotnet_record_key_rules(self):
+        entity = build_result_entity(
+            blob_url="https://alinkdev.blob.core.windows.net/barcodescanner/deal.pdf",
+            source_name="deal.pdf",
+            source_metadata={},
+            result={
+                "barcodes": [
+                    {"page": 1, "value": "SCHO-S12-DD-1792093918"},
+                    {"page": 2, "value": "SCHO-S12-V-JN1DF0BB7PM708511"},
+                    {"page": 3, "value": "SCHO-S12-D-1792093918"},
+                    {"page": 4, "value": "SCHO-S12-D-INVALID-456"},
+                    {"page": 5, "value": "SCHO-S12-X"},
+                    {"page": 6, "value": "SCHO-S12-D-2147483648"},
+                ]
+            },
+            folder_detail_type="Deal",
+        )
+
+        self.assertEqual(
+            json.loads(entity["pagenumber"]),
+            [
+                {"page": 1, "rono": "1792093918"},
+                {"page": 2, "rono": "JN1DF0BB7PM708511"},
+                {"page": 3, "rono": "1792093918"},
+                {"page": 4, "rono": "-456"},
+                {"page": 5, "rono": "X"},
+            ],
         )
 
     def test_missing_store_and_barcodes_produce_empty_values(self):

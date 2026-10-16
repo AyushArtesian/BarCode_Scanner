@@ -10,7 +10,11 @@ from azure.data.tables import TableServiceClient, UpdateMode
 from azure.identity import AzureCliCredential, ManagedIdentityCredential
 
 from .storage import parse_blob_url, redact, validate_storage_account_url
-from .validation import is_valid_barcode
+from .validation import (
+    deal_record_key,
+    is_valid_barcode,
+    normalize_folder_detail_type,
+)
 
 TABLE_NAME = "BarcodeScanResults"
 
@@ -62,6 +66,7 @@ def build_result_entity(
     """Build a stable, SAS-free entity after validating barcodes for its folder."""
     container, blob_name = parse_blob_url(blob_url, ".pdf")
     table_file_name = original_file_name or source_name
+    normalized_folder_detail_type = normalize_folder_detail_type(folder_detail_type)
     barcodes = sorted(
         (
             barcode
@@ -99,7 +104,14 @@ def build_result_entity(
         "Store": store,
         "pagenumber": json.dumps(
             [
-                {"page": int(barcode["page"]), "rono": barcode["value"]}
+                {
+                    "page": int(barcode["page"]),
+                    "rono": (
+                        deal_record_key(barcode["value"])
+                        if normalized_folder_detail_type == "Deal"
+                        else barcode["value"]
+                    ),
+                }
                 for barcode in barcodes
             ],
             ensure_ascii=False,
