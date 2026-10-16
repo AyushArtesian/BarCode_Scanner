@@ -79,7 +79,7 @@ class TableResultEntityTests(unittest.TestCase):
                 folder_detail_type="RO",
             )
 
-    def test_only_stores_barcode_values_matching_validation_regex(self):
+    def test_only_stores_barcode_values_passing_ro_validation(self):
         entity = build_result_entity(
             blob_url=(
                 "https://alinkdev.blob.core.windows.net/barcodescanner/"
@@ -103,12 +103,11 @@ class TableResultEntityTests(unittest.TestCase):
             json.loads(entity["pagenumber"]),
             [
                 {"page": 1, "rono": "12345"},
-                {"page": 5, "rono": "123456789012345678"},
             ],
         )
         self.assertEqual(
             json.loads(entity["OriginalFileName"]),
-            ["validated.pdf", "validated_1_1.pdf", "validated_2_5.pdf"],
+            ["validated.pdf", "validated_1_1.pdf"],
         )
 
     def test_deal_folder_stores_only_valid_deal_barcodes(self):

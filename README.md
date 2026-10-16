@@ -62,7 +62,8 @@ property.
 - `pagenumber`: JSON array of `{ "page": 1-based page number, "rono": "barcode value" }`
   entries for barcode values valid for the supplied folder type. RO values
   match `^(?!^.{17}$)\d{5,}$` (at least five digits, excluding exactly 17
-  characters). Deal values match `^[schoSCHO]+-[A-Za-z0-9]+(-[A-Za-z0-9]+)`;
+  characters) and must parse as a nonnegative signed 32-bit integer. Deal values
+  match `^[schoSCHO]+-[A-Za-z0-9]+(-[A-Za-z0-9]+)`;
   when a value has four hyphen-separated parts and the third part is `D`,
   case-insensitively, the fourth part must parse as an integer.
 - `CreatedAt`: UTC start time reported by the completed Container Apps Job

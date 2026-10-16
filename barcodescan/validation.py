@@ -6,6 +6,7 @@ _DEAL_VALUE_PATTERN = re.compile(
     r"^[schoSCHO]+-[A-Za-z0-9]+(-[A-Za-z0-9]+)"
 )
 _DEAL_NUMBER_PATTERN = re.compile(r"[+-]?[0-9]+")
+_INT32_MAX_TEXT = str(2**31 - 1)
 _INT32_MIN = -(2**31)
 _INT32_MAX = 2**31 - 1
 
@@ -30,7 +31,20 @@ def is_valid_barcode(value: object, folder_detail_type: str) -> bool:
 
     folder_type = normalize_folder_detail_type(folder_detail_type)
     if folder_type == "RO":
-        return _RO_VALUE_PATTERN.match(text) is not None
+        match = _RO_VALUE_PATTERN.match(text)
+        if match is None:
+            return False
+        digits = match.group()
+        if not digits.isascii():
+            return False
+        significant_digits = digits.lstrip("0") or "0"
+        return (
+            len(significant_digits) < len(_INT32_MAX_TEXT)
+            or (
+                len(significant_digits) == len(_INT32_MAX_TEXT)
+                and significant_digits <= _INT32_MAX_TEXT
+            )
+        )
     if _DEAL_VALUE_PATTERN.match(text) is None:
         return False
 

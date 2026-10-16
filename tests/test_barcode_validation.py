@@ -4,13 +4,22 @@ from barcodescan.validation import is_valid_barcode, normalize_folder_detail_typ
 
 
 class BarcodeValidationTests(unittest.TestCase):
-    def test_ro_validation_uses_the_supplied_regex_rule(self):
+    def test_ro_validation_uses_regex_and_int32_range(self):
         self.assertTrue(is_valid_barcode("12345", "RO"))
-        self.assertTrue(is_valid_barcode("1234567890123456", "RO"))
-        self.assertTrue(is_valid_barcode("123456789012345678", "RO"))
+        self.assertFalse(is_valid_barcode("1234567890123456", "RO"))
+        self.assertFalse(is_valid_barcode("123456789012345678", "RO"))
         self.assertFalse(is_valid_barcode("1234", "RO"))
         self.assertFalse(is_valid_barcode("12345678901234567", "RO"))
         self.assertFalse(is_valid_barcode("1234A", "RO"))
+
+    def test_ro_validation_requires_a_nonnegative_int32_value(self):
+        self.assertTrue(is_valid_barcode("00000", "RO"))
+        self.assertTrue(is_valid_barcode("2147483647", "RO"))
+        self.assertFalse(is_valid_barcode("2147483648", "RO"))
+        self.assertTrue(is_valid_barcode("000002147483647", "RO"))
+        self.assertFalse(is_valid_barcode("000002147483648", "RO"))
+        self.assertFalse(is_valid_barcode("١٢٣٤٥", "RO"))
+        self.assertTrue(is_valid_barcode("2147483647\n", "RO"))
 
     def test_deal_validation_checks_regex_and_conditional_deal_number(self):
         self.assertTrue(is_valid_barcode("SCHO-ABC-D-123", "Deal"))
