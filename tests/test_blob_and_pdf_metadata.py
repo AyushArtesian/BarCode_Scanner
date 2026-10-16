@@ -95,6 +95,7 @@ class BlobUrlTests(unittest.TestCase):
             "invoice.pdf",
             "North",
             "FileBunkerRawFiles/incoming/invoice.pdf",
+            "RO",
         )
 
         self.assertEqual(config.input_url, url)
@@ -116,10 +117,30 @@ class BlobUrlTests(unittest.TestCase):
     )
     def test_load_config_defaults_to_the_seven_dpi_passes(self):
         config = load_config(
-            "https://alinkdev.blob.core.windows.net/barcodescanner/file.pdf"
+            "https://alinkdev.blob.core.windows.net/barcodescanner/file.pdf",
+            folder_detail_type_argument="RO",
         )
 
         self.assertEqual(config.dpis, (100, 150, 170, 200, 250, 350, 500))
+
+    def test_load_config_requires_folder_detail_type(self):
+        with self.assertRaisesRegex(ConfigError, "FolderDetailType"):
+            load_config(
+                "https://alinkdev.blob.core.windows.net/barcodescanner/file.pdf"
+            )
+
+    @patch.dict(
+        os.environ,
+        {"AZURE_STORAGE_CONNECTION_STRING": DUMMY_CONNECTION_STRING},
+        clear=True,
+    )
+    def test_load_config_normalizes_folder_detail_type(self):
+        config = load_config(
+            "https://alinkdev.blob.core.windows.net/barcodescanner/file.pdf",
+            folder_detail_type_argument="deal",
+        )
+
+        self.assertEqual(config.folder_detail_type, "Deal")
 
     @patch.dict(
         os.environ,
@@ -134,12 +155,15 @@ class BlobUrlTests(unittest.TestCase):
     )
     @patch("job.os.process_cpu_count", return_value=2)
     def test_container_app_default_workers_use_all_allocated_cpus(self, _cpu_count):
-        self.assertEqual(load_config().workers, 2)
+        self.assertEqual(load_config(folder_detail_type_argument="RO").workers, 2)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_load_config_requires_a_blob_connection_string_for_url_input(self):
         with self.assertRaisesRegex(ConfigError, "AZURE_STORAGE_CONNECTION_STRING"):
-            load_config("https://alinkdev.blob.core.windows.net/barcodescanner/file.pdf")
+            load_config(
+                "https://alinkdev.blob.core.windows.net/barcodescanner/file.pdf",
+                folder_detail_type_argument="RO",
+            )
 
     @patch.dict(
         os.environ,
@@ -155,7 +179,7 @@ class BlobUrlTests(unittest.TestCase):
     )
     @patch("job.ManagedIdentityCredential", create=True)
     def test_load_config_accepts_blob_url_with_managed_identity(self, credential):
-        config = load_config()
+        config = load_config(folder_detail_type_argument="RO")
 
         self.assertEqual(
             config.blob_client.url,
@@ -177,7 +201,7 @@ class BlobUrlTests(unittest.TestCase):
     @patch("job.ManagedIdentityCredential")
     def test_managed_identity_mode_rejects_a_different_storage_account(self, _credential):
         with self.assertRaisesRegex(ConfigError, "does not match"):
-            load_config()
+            load_config(folder_detail_type_argument="RO")
 
     @patch.dict(
         os.environ,
@@ -192,7 +216,7 @@ class BlobUrlTests(unittest.TestCase):
     )
     @patch("job.AzureCliCredential")
     def test_load_config_accepts_blob_url_with_azure_cli_identity(self, credential):
-        config = load_config()
+        config = load_config(folder_detail_type_argument="RO")
 
         self.assertEqual(
             config.blob_client.url,
@@ -212,7 +236,7 @@ class BlobUrlTests(unittest.TestCase):
     )
     def test_managed_identity_mode_requires_account_endpoint(self):
         with self.assertRaisesRegex(ConfigError, "AZURE_STORAGE_ACCOUNT_URL"):
-            load_config()
+            load_config(folder_detail_type_argument="RO")
 
     @patch.dict(
         os.environ,
@@ -226,7 +250,7 @@ class BlobUrlTests(unittest.TestCase):
     )
     def test_load_config_rejects_unknown_storage_auth_mode(self):
         with self.assertRaisesRegex(ConfigError, "AZURE_STORAGE_AUTH_MODE"):
-            load_config()
+            load_config(folder_detail_type_argument="RO")
 
     def test_download_is_conditional_on_the_blob_version_read(self):
         class FakeDownloader:
@@ -270,7 +294,7 @@ class JobWorkflowTests(unittest.TestCase):
         writer.add_metadata({"/Title": "Original"})
         writer.write(self.source)
 
-    def config(self):
+    def config(self, folder_detail_type="RO"):
         return JobConfig(
             input_url=None,
             local_input=self.source,
@@ -279,6 +303,7 @@ class JobWorkflowTests(unittest.TestCase):
             dpis=(72,),
             workers=1,
             fallback=False,
+            folder_detail_type=folder_detail_type,
         )
 
     def test_successful_local_scan_does_not_modify_source_pdf_or_write_table(self):
@@ -298,15 +323,44 @@ class JobWorkflowTests(unittest.TestCase):
 
         source_bytes = self.source.read_bytes()
         with (
-            patch("job.scan_pdf", return_value=merger),
+            patch("job.scan_pdf", return_value=merger) as scan,
             patch("job.write_result_entity") as write_result_entity,
         ):
             code, result = run(self.config(), time.perf_counter())
 
         self.assertEqual(code, EXIT_OK)
         self.assertEqual(result["barcode_count"], 1)
+        self.assertFalse(scan.call_args.kwargs["first_page_only"])
+        self.assertEqual(scan.call_args.args[2].folder_detail_type, "RO")
         self.assertEqual(self.source.read_bytes(), source_bytes)
         write_result_entity.assert_not_called()
+
+    def test_deal_scan_passes_type_and_scans_only_the_first_page(self):
+        merger = PageMerger()
+        merger.add({
+            "file": self.source.name,
+            "page": 1,
+            "dpi": 100,
+            "barcodes": [{
+                "type": "Code128",
+                "value": "SCHO-ABC-D-123",
+                "method": "test",
+                "confidence": 1.0,
+                "bbox": [0.1, 0.2, 0.8, 0.9],
+            }],
+        })
+
+        with patch("job.scan_pdf", return_value=merger) as scan:
+            code, result = run(
+                self.config("Deal"),
+                time.perf_counter(),
+            )
+
+        self.assertEqual(code, EXIT_OK)
+        self.assertEqual(result["barcodes"][0]["value"], "SCHO-ABC-D-123")
+        settings = scan.call_args.args[2]
+        self.assertEqual(settings.folder_detail_type, "Deal")
+        self.assertTrue(scan.call_args.kwargs["first_page_only"])
 
     def test_successful_blob_scan_writes_table_row_without_mutating_blob_metadata(self):
         class FakeDownloader:
@@ -356,6 +410,7 @@ class JobWorkflowTests(unittest.TestCase):
             dpis=(72,),
             workers=1,
             fallback=False,
+            folder_detail_type="RO",
             blob_uri="FileBunkerRawFiles/source.pdf",
         )
 
@@ -461,12 +516,13 @@ class JobWorkflowTests(unittest.TestCase):
             },
         )
 
-    def test_scan_command_passes_fourth_positional_file_path_to_config(self):
+    def test_scan_command_passes_folder_detail_type_after_blob_uri(self):
         input_values = [
             "https://alinkprodstorage.blob.core.windows.net/raw/source.pdf",
             "source.pdf",
             "SC1",
             "FileBunkerRawFiles/2026/source.pdf",
+            "Deal",
         ]
         output = StringIO()
 

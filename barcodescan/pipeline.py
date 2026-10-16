@@ -7,6 +7,7 @@ from .config import Settings
 from .decode import decode_full, decode_regions, dedupe
 from .detect import detect_regions, save_debug
 from .sources import pdf_page, render_page
+from .validation import is_valid_barcode
 
 
 def init_worker():
@@ -53,12 +54,19 @@ def process_task(task, cfg: Settings):
 
 
 def process_page(task, cfg: Settings):
-    """Try a page's DPI passes in order and stop after the first barcode hit.
+    """Try a page's DPI passes in order and stop after the first valid barcode.
     task = (kind, path, name, index, dpis)."""
     kind, path, name, index, dpis = task
     records = []
     for dpi in dpis:
         rec = process_task((kind, path, name, index, dpi), cfg)
+        if cfg.folder_detail_type and "barcodes" in rec:
+            rec = dict(rec)
+            rec["barcodes"] = [
+                barcode
+                for barcode in rec["barcodes"]
+                if is_valid_barcode(barcode.get("value"), cfg.folder_detail_type)
+            ]
         records.append(rec)
         if rec.get("barcodes"):
             break

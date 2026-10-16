@@ -45,3 +45,4 @@ class Settings:
     fallback: bool = False                  # full-page decode when nothing is found
     debug_dir: Optional[str] = None         # save detection overlays here
     blank_std: float = BLANK_STD
+    folder_detail_type: Optional[str] = None

@@ -2,8 +2,8 @@
 """Scan one PDF from Azure Blob Storage and store results in Azure Table Storage.
 
 Flow:
-  download PDF -> scan each page until a barcode is found -> upsert one table entity
-  -> print the result
+  download PDF -> scan pages using FolderDetailType rules -> upsert one table
+  entity -> print the result
 
 Environment variables (see .env)
   AZURE_STORAGE_CONNECTION_STRING  access to the source blob and table service
@@ -15,6 +15,9 @@ Environment variables (see .env)
   SCAN_DPIS                       default "100,150,170,200,250,350,500"
   WORKERS                         default available CPU count - 1
   FALLBACK                        "1" enables the slow full-page decode
+
+The scan command requires FolderDetailType as its fifth positional argument
+after the blob URI: RO or Deal.
 
 The source Blob metadata and PDF bytes are not changed. The table entity stores
 barcode page/value data and the derived names for the would-be split files.
@@ -69,6 +72,7 @@ from barcodescan.table_storage import (  # noqa: E402
     update_execution_timestamps,
     write_result_entity,
 )
+from barcodescan.validation import normalize_folder_detail_type  # noqa: E402
 
 EXIT_OK, EXIT_DOWNLOAD, EXIT_SCAN, EXIT_WRITE, EXIT_CONFIG = range(5)
 JOB_ID = os.environ.get("CONTAINER_APP_JOB_EXECUTION_NAME", "local")
@@ -103,6 +107,7 @@ class JobConfig:
     dpis: Tuple[int, ...]
     workers: int
     fallback: bool
+    folder_detail_type: str
     file_name: Optional[str] = None
     store_code: Optional[str] = None
     blob_uri: Optional[str] = None
@@ -166,7 +171,15 @@ def load_config(
     file_name_argument: Optional[str] = None,
     store_code_argument: Optional[str] = None,
     blob_uri_argument: Optional[str] = None,
+    folder_detail_type_argument: Optional[str] = None,
 ) -> JobConfig:
+    try:
+        folder_detail_type = normalize_folder_detail_type(
+            folder_detail_type_argument or ""
+        )
+    except ValueError as error:
+        raise ConfigError(str(error)) from error
+
     env = os.environ.get
     input_url = (input_argument or env("INPUT_PDF_URL") or "").strip() or None
     local_input = (env("LOCAL_INPUT") or "").strip() or None
@@ -204,6 +217,7 @@ def load_config(
         dpis=dpis,
         workers=workers,
         fallback=env("FALLBACK") == "1",
+        folder_detail_type=folder_detail_type,
         file_name=file_name_argument or None,
         store_code=store_code_argument,
         blob_uri=blob_uri_argument,
@@ -224,7 +238,11 @@ def run(cfg: JobConfig, started: float, started_at: datetime | None = None):
     """Returns (exit_code, response_dict). Always returns a response."""
     job_started_at = started_at or datetime.now(timezone.utc)
     name = input_name(cfg)
-    settings = Settings(dpis=cfg.dpis, fallback=cfg.fallback)
+    settings = Settings(
+        dpis=cfg.dpis,
+        fallback=cfg.fallback,
+        folder_detail_type=cfg.folder_detail_type,
+    )
     source = str(cfg.local_input) if cfg.local_input else redact(cfg.input_url or "")
     log.info("start file=%s source=%s dpis=%s workers=%d",
              name, source, list(cfg.dpis), cfg.workers)
@@ -254,7 +272,8 @@ def run(cfg: JobConfig, started: float, started_at: datetime | None = None):
 
         try:
             merger = scan_pdf(pdf_path, cfg.workers, settings,
-                              name=name, progress=on_progress)
+                              name=name, progress=on_progress,
+                              first_page_only=cfg.folder_detail_type == "Deal")
         except Exception as e:
             log.exception("scan failed")
             return EXIT_SCAN, failure("scan", e, name)
@@ -279,6 +298,7 @@ def run(cfg: JobConfig, started: float, started_at: datetime | None = None):
                     store_code=cfg.store_code,
                     updated_at=datetime.now(timezone.utc),
                     blob_uri=cfg.blob_uri,
+                    folder_detail_type=cfg.folder_detail_type,
                 )
                 write_result_entity(entity)
                 log.info("upserted scan results in Azure Table %s",
@@ -332,6 +352,11 @@ def main(argv=None) -> int:
         "blob_uri",
         nargs="?",
         help="Blob URI value supplied by the Logic App for BlobBackupFilePath",
+    )
+    parser.add_argument(
+        "folder_detail_type",
+        nargs="?",
+        help="Required for scans: RO or Deal",
     )
     parser.add_argument(
         "--finalize-execution",
@@ -393,6 +418,7 @@ def main(argv=None) -> int:
             args.file_name,
             args.store_code,
             args.blob_uri,
+            args.folder_detail_type,
         )
     except ConfigError as e:
         log.error("configuration error: %s", e)
