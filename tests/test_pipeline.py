@@ -43,6 +43,30 @@ class ProcessPageTests(unittest.TestCase):
         self.assertEqual([record["dpi"] for record in records], [100, 150, 170])
         self.assertEqual(scan.call_count, 3)
 
+    def test_invalid_barcode_does_not_stop_higher_dpi_passes(self):
+        page_task = ("pdf", "source.pdf", "source.pdf", 0, (100, 150, 170))
+
+        def scan_at_dpi(task, _settings):
+            dpi = task[-1]
+            value = "ABC" if dpi == 100 else "12345"
+            return {
+                "file": "source.pdf",
+                "page": 1,
+                "dpi": dpi,
+                "barcodes": [{"type": "Code128", "value": value}],
+            }
+
+        with patch("barcodescan.pipeline.process_task", side_effect=scan_at_dpi) as scan:
+            records = process_page(
+                page_task,
+                Settings(folder_detail_type="RO"),
+            )
+
+        self.assertEqual([record["dpi"] for record in records], [100, 150])
+        self.assertEqual(records[0]["barcodes"], [])
+        self.assertEqual(records[1]["barcodes"][0]["value"], "12345")
+        self.assertEqual(scan.call_count, 2)
+
     def test_continues_after_a_dpi_pass_error(self):
         page_task = ("pdf", "source.pdf", "source.pdf", 0, (100, 150, 170))
 

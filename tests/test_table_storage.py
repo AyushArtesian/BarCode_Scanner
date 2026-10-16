@@ -3,6 +3,7 @@ import json
 import os
 import unittest
 from datetime import datetime, timezone
+from inspect import Parameter, signature
 from unittest.mock import Mock, patch
 
 from azure.data.tables import UpdateMode
@@ -16,6 +17,12 @@ from barcodescan.table_storage import (
 
 
 class TableResultEntityTests(unittest.TestCase):
+    def test_folder_detail_type_is_required_for_barcode_validation(self):
+        parameter = signature(build_result_entity).parameters["folder_detail_type"]
+
+        self.assertEqual(parameter.kind, Parameter.KEYWORD_ONLY)
+        self.assertIs(parameter.default, Parameter.empty)
+
     def test_builds_source_row_with_split_names_barcode_boundaries_and_store(self):
         entity = build_result_entity(
             blob_url=(
@@ -34,6 +41,7 @@ class TableResultEntityTests(unittest.TestCase):
             created_at=datetime(2026, 10, 12, 10, 0, tzinfo=timezone.utc),
             updated_at=datetime(2026, 10, 12, 10, 5, tzinfo=timezone.utc),
             blob_uri="FileBunkerRawFiles/incoming/invoice.pdf",
+            folder_detail_type="RO",
         )
 
         self.assertEqual(
@@ -68,6 +76,7 @@ class TableResultEntityTests(unittest.TestCase):
                 source_metadata={},
                 result={"barcodes": []},
                 updated_at=datetime(2026, 10, 12, 10, 5),
+                folder_detail_type="RO",
             )
 
     def test_only_stores_barcode_values_matching_validation_regex(self):
@@ -87,6 +96,7 @@ class TableResultEntityTests(unittest.TestCase):
                     {"page": 5, "value": "123456789012345678"},
                 ]
             },
+            folder_detail_type="RO",
         )
 
         self.assertEqual(
@@ -101,6 +111,32 @@ class TableResultEntityTests(unittest.TestCase):
             ["validated.pdf", "validated_1_1.pdf", "validated_2_5.pdf"],
         )
 
+    def test_deal_folder_stores_only_valid_deal_barcodes(self):
+        entity = build_result_entity(
+            blob_url=(
+                "https://alinkdev.blob.core.windows.net/barcodescanner/deal.pdf"
+            ),
+            source_name="deal.pdf",
+            source_metadata={},
+            result={
+                "barcodes": [
+                    {"page": 1, "value": "SCHO-ABC-D-123"},
+                    {"page": 2, "value": "SCHO-ABC-D-invalid"},
+                    {"page": 3, "value": "12345"},
+                ]
+            },
+            folder_detail_type="Deal",
+        )
+
+        self.assertEqual(
+            json.loads(entity["pagenumber"]),
+            [{"page": 1, "rono": "SCHO-ABC-D-123"}],
+        )
+        self.assertEqual(
+            json.loads(entity["OriginalFileName"]),
+            ["deal.pdf", "deal_1_1.pdf"],
+        )
+
     def test_missing_store_and_barcodes_produce_empty_values(self):
         entity = build_result_entity(
             blob_url=(
@@ -110,6 +146,7 @@ class TableResultEntityTests(unittest.TestCase):
             source_metadata={},
             result={"barcodes": []},
             created_at=datetime(2026, 10, 12, 10, 0, tzinfo=timezone.utc),
+            folder_detail_type="RO",
         )
 
         self.assertEqual(entity["Store"], "")
@@ -126,6 +163,7 @@ class TableResultEntityTests(unittest.TestCase):
             "source_name": "invoice.pdf",
             "source_metadata": {},
             "result": {"barcodes": []},
+            "folder_detail_type": "RO",
         }
 
         first = build_result_entity(**arguments)

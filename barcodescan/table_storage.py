@@ -2,7 +2,6 @@
 import hashlib
 import json
 import os
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -11,9 +10,9 @@ from azure.data.tables import TableServiceClient, UpdateMode
 from azure.identity import AzureCliCredential, ManagedIdentityCredential
 
 from .storage import parse_blob_url, redact, validate_storage_account_url
+from .validation import is_valid_barcode
 
 TABLE_NAME = "BarcodeScanResults"
-_BARCODE_VALUE_PATTERN = re.compile(r"^(?!^.{17}$)\d{5,}$")
 
 _TABLE_HOST_SUFFIXES = (
     (".blob.core.windows.net", ".table.core.windows.net", None),
@@ -57,15 +56,17 @@ def build_result_entity(
     store_code: str | None = None,
     updated_at: datetime | None = None,
     blob_uri: str | None = None,
+    *,
+    folder_detail_type: str,
 ) -> dict:
-    """Build a stable, SAS-free table entity for a scanned source PDF."""
+    """Build a stable, SAS-free entity after validating barcodes for its folder."""
     container, blob_name = parse_blob_url(blob_url, ".pdf")
     table_file_name = original_file_name or source_name
     barcodes = sorted(
         (
             barcode
             for barcode in result["barcodes"]
-            if _BARCODE_VALUE_PATTERN.match(str(barcode["value"]))
+            if is_valid_barcode(barcode["value"], folder_detail_type)
         ),
         key=lambda barcode: (int(barcode["page"]), str(barcode["value"])),
     )

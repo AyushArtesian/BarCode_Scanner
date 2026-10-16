@@ -13,12 +13,16 @@ PROGRESS_STEP = 50   # call the progress callback every N finished pages
 
 
 def scan_pdf(pdf_path, workers: int, settings: Settings, name: Optional[str] = None,
-             progress: Optional[Callable[[int, int], None]] = None) -> PageMerger:
+             progress: Optional[Callable[[int, int], None]] = None,
+             first_page_only: bool = False) -> PageMerger:
     """Scan pages through settings.dpis until each page gets a barcode or runs out.
-    progress(done, total) is called periodically if given."""
+    progress(done, total) is called periodically if given. Optionally scan only
+    the first page."""
     pdf_path = Path(pdf_path)
     name = name or pdf_path.name
     pages = list(build_tasks([(str(pdf_path), name)]))
+    if first_page_only:
+        pages = pages[:1]
     tasks = [(*t, settings.dpis) for t in pages]
 
     merger = PageMerger()

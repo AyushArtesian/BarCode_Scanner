@@ -25,12 +25,19 @@ remains available for existing deployments. No SAS token is required, and URL
 query parameters are ignored and are not stored in the results table.
 
 The job prints one JSON response to stdout and structured progress logs to
-stderr. An execution is unsuccessful if downloading, scanning all pages, or
-writing the table entity fails. If some pages scan successfully and others
-fail, the job records the barcodes it found and returns a `partial` result.
+stderr. An execution is unsuccessful if downloading, scanning the selected
+page or pages, or writing the table entity fails. If some pages scan
+successfully and others fail, the job records the barcodes it found and returns
+a `partial` result.
 Each page is scanned through the configured DPI values in order. Once a pass
-finds a barcode, higher-DPI passes are skipped for that page; pages with no hit
-continue through the remaining values.
+finds a valid barcode, higher-DPI passes are skipped for that page; invalid
+decoded values do not stop the remaining passes. RO scans process every page.
+Deal scans process only the first page, trying the configured DPIs until a
+valid barcode is found or the passes are exhausted.
+
+Every scan invocation must pass `FolderDetailType` as the fifth positional
+argument, after the blob URI: `RO` or `Deal` (case-insensitive). The preceding
+arguments are the PDF URL, original file name, store code, and blob URI.
 
 ## Table result entity
 
@@ -41,6 +48,8 @@ doesn't upload a backup or split PDFs.
 
 Each entity is keyed by source container and a stable hash of the source blob
 name, so reprocessing the same PDF replaces its row. Its properties are:
+`FolderDetailType` selects barcode validation and is not stored as a table
+property.
 
 - `BlobBackupFilePath`: the `FilePath` value supplied by the Logic App request.
 - `OriginalFileName`: JSON array containing the Logic App's `FileName`
@@ -51,8 +60,11 @@ name, so reprocessing the same PDF replaces its row. Its properties are:
 - `Store`: Logic App's `StoreCode`, falling back to source blob `Store`
   metadata or an empty string if omitted.
 - `pagenumber`: JSON array of `{ "page": 1-based page number, "rono": "barcode value" }`
-  entries for detected barcode boundaries whose values match
-  `^(?!^.{17}$)\d{5,}$` (at least five digits, excluding exactly 17 characters).
+  entries for barcode values valid for the supplied folder type. RO values
+  match `^(?!^.{17}$)\d{5,}$` (at least five digits, excluding exactly 17
+  characters). Deal values match `^[schoSCHO]+-[A-Za-z0-9]+(-[A-Za-z0-9]+)`;
+  when a value has four hyphen-separated parts and the third part is `D`,
+  case-insensitively, the fourth part must parse as an integer.
 - `CreatedAt`: UTC start time reported by the completed Container Apps Job
   execution.
 - `UpdatedAt`: UTC end time reported by the completed Container Apps Job
@@ -69,8 +81,22 @@ mode:
 az login
 $env:AZURE_STORAGE_AUTH_MODE = "azure_cli"
 $env:AZURE_STORAGE_ACCOUNT_URL = "https://alinkdev.blob.core.windows.net"
-& .\venv\Scripts\python.exe job.py "https://<account>.blob.core.windows.net/<container>/<file>.pdf"
 ```
+
+For a scan, supply all five positional values; use the appropriate folder type
+as the final value:
+
+```powershell
+& .\venv\Scripts\python.exe job.py `
+  "https://<account>.blob.core.windows.net/<container>/<file>.pdf" `
+  "<original file name>" `
+  "<store code>" `
+  "<blob URI>" `
+  "RO"
+```
+
+Replace `"RO"` with `"Deal"` for Deal folders. The same fifth argument must
+be included in the Container Apps Job arguments sent by the Logic App.
 
 For existing deployments that still use a connection string, leave
 `AZURE_STORAGE_AUTH_MODE` unset and set `AZURE_STORAGE_CONNECTION_STRING`
